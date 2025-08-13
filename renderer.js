@@ -197,52 +197,35 @@ async function processScanQueue() {
 }
 
 // Modified deep check function that returns a promise
-// Modified deep check function that returns a promise
-// Modified deep check function that returns a promise
-// Modified deep check function that returns a promise
+
+
+
+// In performDeepCheck function, remove progress handling
 function performDeepCheck(casketId, casketName, suppressModal = false) {
   return new Promise((resolve) => {
-    let resolved = false; // Track if we've already resolved
+    let resolved = false;
     
-    // Create a temporary handler for this specific deep check
     const tempResultHandler = (data) => {
       if (!resolved) {
         resolved = true;
-        
-        // Always resolve the promise with the data
         resolve(data);
         
-        // If not in batch mode and not suppressed, show the modal
         if (!suppressModal && !scanAllState.isBatchMode) {
           handleDeepCheckResult(data);
         }
       }
     };
     
-    // Update progress handler for batch mode
-    if (suppressModal || scanAllState.isBatchMode) {
-      window.electronAPI.onDeepCheckProgress((data) => {
-        updateIndividualUnitProgress(casketId, data.progress);
-      });
-    }
-    
-    // Override the result handler temporarily
-    const originalResultHandler = window.electronAPI.onDeepCheckResult;
+    // No more progress updates needed - it's instant!
     window.electronAPI.onDeepCheckResult(tempResultHandler);
-    
-    // Start the deep check
     window.electronAPI.deepCheckCasket(casketId);
     
-    // Set a timeout to restore the original handler and resolve if needed
     setTimeout(() => {
       if (!resolved) {
-        logger.error(`Deep check for ${casketName} timed out after 5 minutes`);
         resolved = true;
         resolve({ success: false, error: 'Operation timed out' });
       }
-      // Restore original handler
-      window.electronAPI.onDeepCheckResult(originalResultHandler);
-    }, 300000); // 5 minute timeout
+    }, 30000); // 30 second timeout instead of 5 minutes
   });
 }
 
@@ -350,15 +333,20 @@ function markUnitFailed(casketId) {
   if (status) status.textContent = 'Failed';
 }
 
+// In renderer.js, in the finishScanAll function, update the items display part:
+
 function finishScanAll() {
   scanAllState.isScanning = false;
-  scanAllState.isBatchMode = false;  // Add this line
+  scanAllState.isBatchMode = false;
   const totalTime = Date.now() - scanAllState.startTime;
   
   // Calculate totals
   const successfulScans = scanAllState.results.filter(r => r.success).length;
   const totalItemsFound = scanAllState.results.reduce((sum, r) => sum + r.itemsFound, 0);
   const failedScans = scanAllState.results.filter(r => !r.success);
+  
+  // Base URL for Steam CDN
+  const baseIconUrl = "https://steamcommunity-a.akamaihd.net/economy/image/";
   
   // Combine all items from all storage units
   const allItems = [];
@@ -376,9 +364,23 @@ function finishScanAll() {
   // Group combined items by name
   const groupedItems = {};
   allItems.forEach((item) => {
-    const name = item.market_hash_name || `Item ID: ${item.assetid}`;
+    const name = item.item_name || item.market_hash_name || `Item ID: ${item.assetid}`;
     if (!groupedItems[name]) {
-      groupedItems[name] = { count: 0, icon: item.icon_url, units: new Set() };
+      // Get the icon URL
+      let iconUrl = item.icon_url || item.item_url || '';
+      
+      // Process the icon URL
+      if (iconUrl.startsWith('http://') || iconUrl.startsWith('https://')) {
+        groupedItems[name] = { count: 0, icon: iconUrl, units: new Set() };
+      } else if (iconUrl.startsWith('-9a81')) {
+        groupedItems[name] = { count: 0, icon: baseIconUrl + iconUrl, units: new Set() };
+      } else if (iconUrl.startsWith('econ/')) {
+        groupedItems[name] = { count: 0, icon: baseIconUrl + iconUrl, units: new Set() };
+      } else if (!iconUrl) {
+        groupedItems[name] = { count: 0, icon: 'static/images/default-item.png', units: new Set() };
+      } else {
+        groupedItems[name] = { count: 0, icon: baseIconUrl + iconUrl, units: new Set() };
+      }
     }
     groupedItems[name].count++;
     groupedItems[name].units.add(item.storageUnit);
@@ -422,7 +424,9 @@ function finishScanAll() {
           <ul class="scan-result-list compact">
             ${sortedItems.slice(0, 10).map(([name, info]) => `
               <li class="scan-result-item compact">
-                <img src="https://steamcommunity-a.akamaihd.net/economy/image/${info.icon}" alt="${name}">
+                <img src="${info.icon}" 
+                     alt="${name}"
+                     onerror="this.onerror=null; this.src='static/images/default-item.png';">
                 <div class="scan-result-item-info">
                   <div class="scan-result-item-name">${name}</div>
                   <div class="scan-result-item-count">Quantity: ${info.count} (found in ${info.units.size} unit${info.units.size > 1 ? 's' : ''})</div>
@@ -1033,11 +1037,13 @@ function startDeepCheck(casketId, casketName, unitElement) {
 }
 
 // Handle deep check result
+// In renderer.js
+
 function handleDeepCheckResult(data) {
   hideLoading();
   
   if (!data.success) {
-    if (data.error && data.error.includes('Weder Inventar noch Casket haben genug Platz. Abbruch.')) {
+    if (data.error && data.error.includes('inventory is too full')) {
       showModal('inventory-full-modal');
     } else {
       toast.error(`Deep check failed: ${data.error}`);
@@ -1048,11 +1054,36 @@ function handleDeepCheckResult(data) {
   const items = data.newlyAddedItems;
   const grouped = {};
   
+  // Base URL for Steam CDN
+  const baseIconUrl = "https://steamcommunity-a.akamaihd.net/economy/image/";
+  
   // Group items by name
   items.forEach((item) => {
-    const name = item.market_hash_name || `Item ID: ${item.assetid}`;
+    const name = item.item_name || item.market_hash_name || `Item ID: ${item.assetid}`;
     if (!grouped[name]) {
-      grouped[name] = { count: 0, icon: item.icon_url };
+      // Get the icon URL
+      let iconUrl = item.icon_url || item.item_url || '';
+      
+      // If it's already a full URL, use it
+      if (iconUrl.startsWith('http://') || iconUrl.startsWith('https://')) {
+        grouped[name] = { count: 0, icon: iconUrl };
+      } 
+      // If it starts with the Steam CDN hash format
+      else if (iconUrl.startsWith('-9a81')) {
+        grouped[name] = { count: 0, icon: baseIconUrl + iconUrl };
+      }
+      // If it's a path like "econ/weapons/..."
+      else if (iconUrl.startsWith('econ/')) {
+        grouped[name] = { count: 0, icon: baseIconUrl + iconUrl };
+      }
+      // If empty, use default
+      else if (!iconUrl) {
+        grouped[name] = { count: 0, icon: 'static/images/default-item.png' };
+      }
+      // Otherwise prepend base URL
+      else {
+        grouped[name] = { count: 0, icon: baseIconUrl + iconUrl };
+      }
     }
     grouped[name].count++;
   });
@@ -1062,17 +1093,17 @@ function handleDeepCheckResult(data) {
   
   // Update scan result modal content
   elements.scanResultTitle.textContent = `Successfully scanned "${appState.currentCasketName}"`;
-  elements.scanResultSummary.textContent = `${totalItems} new items detected. You can now sell them on cswhale.com !`;
+  elements.scanResultSummary.textContent = `${totalItems} new items detected. You can now sell them on cswhale.com!`;
   elements.scanResultList.innerHTML = '';
-  
-  const baseIconUrl = "https://steamcommunity-a.akamaihd.net/economy/image/";
   
   sortedEntries.forEach(([name, info]) => {
     const li = document.createElement('li');
     li.className = 'scan-result-item';
     
     li.innerHTML = `
-      <img src="${baseIconUrl}${info.icon}" alt="${name}" onerror="this.src='static/images/default-item.png'">
+      <img src="${info.icon}" 
+           alt="${name}" 
+           onerror="this.onerror=null; this.src='static/images/default-item.png';">
       <div class="scan-result-item-info">
         <div class="scan-result-item-name">${name}</div>
         <div class="scan-result-item-count">Quantity: ${info.count}</div>
@@ -1085,7 +1116,7 @@ function handleDeepCheckResult(data) {
   showModal('scan-result-modal');
   
   // Log success
-  logger.log(`Deep check completed successfully: ${totalItems} items found in ${data.totalTimeMs}ms`);
+  logger.log(`Deep check completed successfully: ${totalItems} items found`);
   
   // Re-enable all storage unit elements
   document.querySelectorAll('.storage-unit').forEach(el => {

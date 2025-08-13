@@ -29,10 +29,11 @@
   ],
   "license": "ISC",
   "dependencies": {
+    "@node-steam/vdf": "^2.2.0",
     "axios": "^1.4.0",
     "dotenv": "^16.3.1",
+    "electron-log": "^5.1.1",
     "electron-updater": "^6.1.0",
-     "electron-log": "^5.1.1",
     "fs": "0.0.1-security",
     "globaloffensive": "^3.2.0",
     "jwt-decode": "^3.1.2",
@@ -129,7 +130,6 @@
       "createStartMenuShortcut": true,
       "deleteAppDataOnUninstall": true,
       "artifactName": "${productName}-Setup-${version}.${ext}"
-
     },
     "dmg": {
       "artifactName": "${productName}-${version}.${ext}",

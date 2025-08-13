@@ -15,6 +15,9 @@ const keytar = require("keytar");
 const jwt_decode = require("jwt-decode");
 const { autoUpdater } = require("electron-updater");
 
+const ItemEnricher = require('./src/enrichment/itemEnricher');
+let itemEnricher; // Define globally
+
 
 // Constants
 const BASE_SERVICE_NAME = "cs-assets-service";
@@ -38,10 +41,6 @@ let community; // SteamCommunity instance
 let lastReceivedToken = null;
 let logStream; // For file logging
 let deviceTokenRequestInProgress = false;
-
-
-
-
 
 
 
@@ -491,6 +490,16 @@ app.whenReady().then(async () => {
   // Validate tokens
   await validateAllStoredTokens();
 
+  
+
+  // Initialize item enricher
+  itemEnricher = new ItemEnricher(logger);
+  itemEnricher.initialize().catch(err => {
+    logger.error('Failed to initialize item enricher', err);
+  });
+
+
+
   // Fetch accounts with automatic token refresh if needed
   try {
     const deviceToken = await keytar.getPassword(SERVICE_NAME, DEVICE_TOKEN_KEY);
@@ -506,6 +515,8 @@ app.whenReady().then(async () => {
     }
   }
 });
+
+
 
 // Quit when all windows are closed, except on macOS
 app.on('window-all-closed', () => {
@@ -888,253 +899,103 @@ ipcMain.on("fetch-storage", async () => {
 /**
  * Handle casket deep check request
  */
+// Replace the entire casket-deep-check handler (lines ~500-850) with:
 ipcMain.on("casket-deep-check", async (event, casketId) => {
-  const startTime = Date.now();
-
   try {
-    logger.info(`Starting deep-check on storage unit ${casketId}...`);
+    logger.info(`Starting scan of storage unit ${casketId}...`);
 
     if (!user || !csgo || !csgo.haveGCSession) {
       throw new Error("Not connected to Steam. Please log in first.");
     }
 
-    // 1) Fetch old local web inventory
-    logger.info("Fetching old web inventory...");
-    const oldInventory = await getWebInventory();
-    const oldInventoryCount = oldInventory.length;
-    logger.info(`Got old web inventory: ${oldInventoryCount} items.`);
-
-    // Check inventory space
-    if (oldInventoryCount > SAFE_INVENTORY_SIZE) {
-      throw new Error("Your inventory is too full to perform a deep check. Please make some space first.");
+    // Get the casket contents
+    logger.info(`Fetching contents of storage unit ${casketId}...`);
+    const casketItems = await fetchCasketContents(casketId);
+    logger.info(`Storage unit ${casketId} contains ${casketItems.length} items`);
+    
+    // DEBUG: Log first item to see structure
+    if (casketItems.length > 0) {
+      logger.info(`Sample raw item: ${JSON.stringify(casketItems[0])}`);
     }
 
-    // Potential "space" items (tradable, CS:GO)
-    const candidateSpaceItems = oldInventory
-      .filter((it) => it.tradable && it.appid === 730)
-      .map((it) => it.assetid);
-    logger.info(`Found ${candidateSpaceItems.length} tradable CS:GO items in old inventory.`);
+    // Initialize enricher if needed
+    if (!itemEnricher) {
+      const ItemEnricher = require('./src/enrichment/itemEnricher');
+      itemEnricher = new ItemEnricher(logger);
+      await itemEnricher.initialize();
+    }
 
-    // 2) Get casket contents
-    logger.info(`Getting storage unit ${casketId} contents...`);
-    const casketItems = await fetchCasketContents(casketId);
-    logger.info(`Storage unit ${casketId} has ${casketItems.length} item(s).`);
-
-    const casketCount = casketItems.length;
-    const originalCasketIds = casketItems.map((it) => it.id);
-
-    // Track space items we temporarily move
-    const temporarilyMovedIntoCasket = [];
-
-    // Current counters
-    let currentInventorySize = oldInventoryCount;
-    let currentCasketSize = casketCount;
-
-    // Progress bar
-    let chunkSize = 50;  // Move this from inside the while loop
-
-    // More accurate calculation based on actual behavior
-    // Replace the entire progress calculation section with:
-    // Simple calculation based on actual behavior
-    const baseChunks = Math.ceil(casketCount / chunkSize);
-
-    // Calculate total movements - space moves are rare since items 
-    // in transition don't count against the inventory limit
-    const totalMovements = (casketCount * 2) + baseChunks;
-
-    logger.info(`Progress: ${oldInventoryCount} inventory, ${casketCount} items, ` +
-                `${baseChunks} chunks => ${totalMovements} movements`);
-
-    let currentMovement = 0;
-    function updateProgress(extra = 1) {
-      currentMovement += extra;
-      const progress = Math.min(
-        100,
-        Math.round((currentMovement / totalMovements) * 100)
-      );
-      
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send("deep-check-progress", {
-          progress,
-          currentMovement,
-          totalMovements,
+    // Enrich the items
+    logger.info(`Enriching ${casketItems.length} items with game data...`);
+    const enrichedItems = [];
+    
+    for (const item of casketItems) {
+      try {
+        const enriched = await itemEnricher.enrichItem(item);
+        enrichedItems.push(enriched);
+        
+        // Log first enriched item as sample
+        if (enrichedItems.length === 1) {
+          logger.info(`Sample enriched item: ${JSON.stringify(enriched)}`);
+        }
+      } catch (err) {
+        logger.error(`Failed to enrich item ${item.id}`, err);
+        // Add fallback for failed enrichment
+        enrichedItems.push({
+          assetid: item.id,
+          market_hash_name: "Unknown Item",
+          icon_url: "",
+          tradable: true,
+          appid: 730
         });
       }
     }
 
-    // Copy casket items for chunk-based processing
-    let remainingCasketItems = [...casketItems];
-
-    // List of newly discovered items
-    const newlyAddedItems = [];
-
-    // Start with a chunk size
+    // Log summary of enrichment
+    const itemCounts = {};
+    enrichedItems.forEach(item => {
+      const name = item.item_name || item.market_hash_name || 'Unknown';
+      itemCounts[name] = (itemCounts[name] || 0) + 1;
+    });
     
+    // Log top 5 items
+    Object.entries(itemCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .forEach(([name, count]) => {
+        logger.info(`[DEBUG] Sending ${count}x ${name}`);
+      });
 
-    while (remainingCasketItems.length > 0) {
-      if (chunkSize > remainingCasketItems.length) {
-        chunkSize = remainingCasketItems.length;
-      }
-      const batch = remainingCasketItems.slice(0, chunkSize);
-
-      // 1) Ensure enough free slots in inventory
-      let freeSlots = SAFE_INVENTORY_SIZE - currentInventorySize;
-      if (freeSlots < chunkSize) {
-        let needed = chunkSize - freeSlots;
-        while (needed > 0) {
-          // If the casket is full, reduce chunk size or abort
-          if (currentCasketSize >= MAX_CASKET_SIZE) {
-            if (chunkSize > 1) {
-              chunkSize = Math.max(1, chunkSize - 1);
-              logger.info(`Chunk too big. Reducing chunk size to ${chunkSize} and retrying...`);
-            } else {
-              throw new Error("Not enough space in inventory or storage unit. Operation aborted.");
-            }
-            break;
-          }
-          // Move one space item from inventory -> casket
-          const itemToMove = candidateSpaceItems.find(
-            (id) => !originalCasketIds.includes(id)
-          );
-          if (!itemToMove) {
-            if (chunkSize > 1) {
-              chunkSize = Math.max(1, chunkSize - 1);
-              logger.info(`No more space-items. Reducing chunk size to ${chunkSize} and retrying...`);
-            } else {
-              throw new Error("Not enough movable items in inventory. Operation aborted.");
-            }
-            break;
-          }
-          logger.info(`Moving space-item ${itemToMove} -> casket ${casketId} to free a slot.`);
-          csgo.addToCasket(casketId, itemToMove);
-          await delay(DELAY_MS);
-
-          temporarilyMovedIntoCasket.push(itemToMove);
-          candidateSpaceItems.splice(
-            candidateSpaceItems.indexOf(itemToMove),
-            1
-          );
-          currentInventorySize--;
-          currentCasketSize++;
-          needed--;
-          updateProgress(1);
-          freeSlots = SAFE_INVENTORY_SIZE - currentInventorySize;
-        }
-        if (freeSlots < chunkSize) {
-          continue;
-        }
-      }
-
-      // 2) Remove items from casket -> inventory
-      for (const gcItem of batch) {
-        logger.info(`Removing item ${gcItem.id} from storage unit ${casketId}...`);
-        csgo.removeFromCasket(casketId, gcItem.id);
-        await delay(DELAY_MS);
-
-        currentInventorySize++;
-        currentCasketSize--;
-        updateProgress(1,);
-      }
-
-      // 3) Refresh local web inventory
-      logger.info(`Fetching new web inventory after removing ${batch.length} item(s)...`);
-      const newInventory = await getWebInventory();
-      logger.info(`Got new web inventory: ${newInventory.length} items.`);
-
-      // 3.1) We want to detect items that weren't in oldInventory
-      const oldIdsSet = new Set(oldInventory.map((it) => it.assetid));
-      const rawNewlyAdded = newInventory.filter(
-        (it) => !oldIdsSet.has(it.assetid)
-      );
-
-      // 3.2) Transform each newly added item to ensure we pass relevant fields
-      const mappedNewlyAdded = rawNewlyAdded.map((item) => ({
-        assetid: item.assetid,
-        classid: item.classid || "",
-        instanceid: item.instanceid || "",
-        market_hash_name: item.market_hash_name || "",
-        icon_url: item.icon_url || "",
-        tradable: item.tradable || false,
-        appid: item.appid,
-      }));
-
-      newlyAddedItems.push(...mappedNewlyAdded);
-      logger.info(`Found ${mappedNewlyAdded.length} new item(s) in inventory.`);
-      updateProgress(1);
-
-      // 4) Put items back into casket
-      for (const gcItem of batch) {
-        logger.info(`Putting item ${gcItem.id} back to casket ${casketId}...`);
-        csgo.addToCasket(casketId, gcItem.id);
-        await delay(DELAY_MS);
-
-        currentInventorySize--;
-        currentCasketSize++;
-        updateProgress(1);
-      }
-
-      remainingCasketItems.splice(0, chunkSize);
-    }
-
-    // Move space items back
-    if (temporarilyMovedIntoCasket.length > 0) {
-      logger.info(`Moving ${temporarilyMovedIntoCasket.length} space-item(s) back to main inventory...`);
-    }
-    
-    const returnBatchSize = 200;
-    for (let i = 0; i < temporarilyMovedIntoCasket.length; i += returnBatchSize) {
-      const batch = temporarilyMovedIntoCasket.slice(i, i + returnBatchSize);
-      for (const itemId of batch) {
-        if (currentInventorySize >= SAFE_INVENTORY_SIZE) {
-          throw new Error("Inventory unexpectedly full while returning space-items.");
-        }
-        logger.info(`Returning space item ${itemId} to main inventory...`);
-        csgo.removeFromCasket(casketId, itemId);
-        await delay(DELAY_MS);
-
-        currentInventorySize++;
-        currentCasketSize--;
-        updateProgress(1);
-      }
-    }
-
-    // Finished
-    const totalMs = Date.now() - startTime;
-    logger.info(`Deep-check complete. Total time: ${totalMs} ms.`);
-
-    // Send newly discovered items to Flask
+    // Send to server
     const steamAccountId = user.steamID.getSteamID64();
     try {
       const serverResponse = await sendNewItemsToServer(
         casketId,
-        newlyAddedItems,
+        enrichedItems,
         steamAccountId
       );
-      logger.info(`Server response for new items: ${JSON.stringify(serverResponse)}`);
+      logger.info(`Server response: ${JSON.stringify(serverResponse)}`);
     } catch (serverErr) {
-      logger.error("Error sending new items to server", serverErr);
-      // We'll still proceed with reporting the deep-check to the UI
+      logger.error("Error sending items to server", serverErr);
     }
 
+    // Send result to renderer
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("deep-check-result", {
         success: true,
-        newlyAddedItems,
-        totalTimeMs: totalMs,
-        estimatedSeconds: Math.round(totalMs / 1000),
+        newlyAddedItems: enrichedItems,
+        totalTimeMs: 0,
+        estimatedSeconds: 0,
       });
     }
-  } catch (error) {
-    logger.error("Error in deep-check operation", error);
-    
-    const totalMs = Date.now() - startTime;
-    logger.info(`Deep-check ended with error. Time: ${totalMs} ms.`);
 
+  } catch (error) {
+    logger.error("Error in storage unit scan", error);
+    
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("deep-check-result", {
         success: false,
-        error: error.message || "Unknown error during deep check",
-        totalTimeMs: totalMs,
+        error: error.message || "Unknown error during scan",
       });
     }
   }
@@ -1554,7 +1415,7 @@ async function fetchCasketContents(casketId) {
   return new Promise((resolve, reject) => {
     csgo.getCasketContents(casketId, (err, items) => {
       if (err) return reject(err);
-      resolve(items);
+      resolve(items); // This already has def_index, paint_index, etc.
     });
   });
 }
