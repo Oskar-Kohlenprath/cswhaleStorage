@@ -1010,14 +1010,10 @@ ipcMain.on("casket-deep-check", async (event, casketId) => {
  */
 // Update sendNewItemsToServer function
 async function sendNewItemsToServer(casketId, newlyAddedItems, steamAccountId) {
-
-
-
   if (!newlyAddedItems || newlyAddedItems.length === 0) {
     logger.info('[DEBUG] No items to send, skipping server request');
     return { success: true, message: 'No items to register' };
   }
-
 
   const apiCall = async () => {
     const deviceToken = await getDeviceToken();
@@ -1026,32 +1022,37 @@ async function sendNewItemsToServer(casketId, newlyAddedItems, steamAccountId) {
     }
 
     const serverUrl = `${API_BASE_URL}/register_storage_items`;
+    
+    // Transform enriched items to what server expects
+    const itemsForServer = newlyAddedItems.map(item => ({
+      assetid: item.assetid || item.id,
+      market_hash_name: item.market_hash_name || item.item_name,
+      // Don't send classid/instanceid since we don't have them
+      // classid and instanceid will be empty strings on server
+      icon_url: item.icon_url || '',
+      tradable: item.tradable !== undefined ? item.tradable : true,
+      category: item.item_type || item.category
+    }));
+    
     const payload = {
       device_token: deviceToken,
       steam_account_id: steamAccountId,
       storage_unit_id: casketId,
-      items: newlyAddedItems,
+      items: itemsForServer,
     };
 
-    logger.info(`[DEBUG] Preparing to send ${newlyAddedItems.length} items`);
+    logger.info(`[DEBUG] Preparing to send ${itemsForServer.length} items`);
 
     const counts = {};
-    newlyAddedItems.forEach(item => {
+    itemsForServer.forEach(item => {
       const name = item.market_hash_name || 'Unknown';
       counts[name] = (counts[name] || 0) + 1;
     });
-
-
-
 
     const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
     sorted.slice(0, 5).forEach(([name, count]) => {
       logger.info(`[DEBUG] Sending ${count}x ${name}`);
     });
-
-    const assetids = newlyAddedItems.map(i => i.assetid);
-    const uniqueAssetids = new Set(assetids);
-    logger.info(`[DEBUG] Asset IDs: ${assetids.length} total, ${uniqueAssetids.size} unique`);
 
     const resp = await axios.post(serverUrl, payload, {
       withCredentials: true,
@@ -1066,6 +1067,9 @@ async function sendNewItemsToServer(casketId, newlyAddedItems, steamAccountId) {
 
   return await withDeviceTokenRetry(apiCall);
 }
+
+
+
 
 /**
  * Send storage units to server
@@ -1727,6 +1731,7 @@ async function promptUserFor2FACodeInRenderer() {
  * Check inventory needs from Flask
  * @param {string} steamId - Steam ID
  */
+// In main.js
 async function checkInventoryNeeds(steamId) {
   const apiCall = async () => {
     logger.info("Fetching inventory-needs from API");
@@ -1752,14 +1757,24 @@ async function checkInventoryNeeds(steamId) {
 
   const data = await withDeviceTokenRetry(apiCall);
 
-  const needsSomething =
-    Array.isArray(data.needed) &&
-    data.needed.some(n => n.missing > 0 && n.storage_assetids.length);
+  // Check if we need to move items
+  const needsSomething = Array.isArray(data.needed) && 
+    data.needed.some(n => n.missing > 0 && n.storage_assetids.length > 0);
 
   if (needsSomething && mainWindow && !mainWindow.isDestroyed()) {
+    // Log what needs to be moved
+    logger.info('Inventory needs detected:');
+    data.needed.forEach(need => {
+      if (need.missing > 0) {
+        logger.info(`  - ${need.market_hash_name}: need ${need.missing}, have ${need.have_in_inv}, can move ${need.storage_assetids.length} from storage`);
+      }
+    });
+    
     mainWindow.webContents.send("inventory-needs", data);
   }
 }
+
+
 
 
 
@@ -1769,85 +1784,166 @@ async function checkInventoryNeeds(steamId) {
  * Perform item moves from storage to inventory
  * @param {Object} payload - Move payload
  */
+// In main.js - Complete performMoves function
 async function performMoves({ locked_assetids, needed }) {
   const start = Date.now();
-  console.log('INFO Starting automatic inventory-balancing…');
+  logger.info('Starting automatic inventory-balancing…');
+
+  // Check if there's anything to move
+  if (!needed || needed.length === 0) {
+    logger.info('No items need to be moved');
+    return;
+  }
 
   // 1. Fetch live inventory
   const t1 = Date.now();
   const webInv = await getWebInventory();
-  console.log(`INFO Fetched live inventory: ${webInv.length} items (took ${Date.now() - t1}ms)`);
+  logger.info(`Fetched live inventory: ${webInv.length} items (took ${Date.now() - t1}ms)`);
 
-  // 2. Determine items to bring in
-  const bringIn = needed.flatMap(n => n.storage_assetids.slice(0, n.missing));
-  console.log(`INFO Total items to bring in: ${bringIn.length}`);
-  if (!bringIn.length) {
-    console.log(`INFO No items need to be moved (total ${Date.now() - start}ms)`);
+  // 2. Determine items to bring in from storage
+  const bringIn = [];
+  const itemSummary = [];
+  
+  for (const need of needed) {
+    // Take only the assetids we need (up to 'missing' count)
+    const assetidsToMove = need.storage_assetids.slice(0, need.missing);
+    bringIn.push(...assetidsToMove);
+    
+    if (assetidsToMove.length > 0) {
+      itemSummary.push({
+        name: need.market_hash_name,
+        count: assetidsToMove.length,
+        required: need.required,
+        have: need.have_in_inv
+      });
+    }
+  }
+  
+  logger.info(`Total items to bring in: ${bringIn.length}`);
+  itemSummary.forEach(item => {
+    logger.info(`  - ${item.name}: moving ${item.count} (have ${item.have}, need ${item.required})`);
+  });
+  
+  if (bringIn.length === 0) {
+    logger.info('No items available in storage to move');
     return;
   }
 
   // 3. Fetch all caskets and their contents once
   const tC = Date.now();
   const caskets = await fetchAllCaskets();
-  console.log(`INFO Fetched ${caskets.length} caskets (took ${Date.now() - tC}ms)`);
+  logger.info(`Fetched ${caskets.length} caskets (took ${Date.now() - tC}ms)`);
 
-  const contentMap = {};
-  await Promise.all(caskets.map(async ck => {
-    const contents = await fetchCasketContents(ck.casketId);
-    ck.itemCount = contents.length;            // for parking
-    for (const it of contents) contentMap[it.id] = ck.casketId;
+  // Build a map of assetid -> casketId
+  const assetToCasket = {};
+  const casketContents = {};
+  
+  await Promise.all(caskets.map(async casket => {
+    try {
+      const contents = await fetchCasketContents(casket.casketId);
+      casketContents[casket.casketId] = contents;
+      casket.itemCount = contents.length; // Update count for parking logic
+      
+      for (const item of contents) {
+        assetToCasket[item.id] = casket.casketId;
+      }
+    } catch (err) {
+      logger.error(`Failed to fetch contents of casket ${casket.casketId}:`, err);
+    }
   }));
-  console.log(`INFO Built content map for ${Object.keys(contentMap).length} items`);
+  
+  logger.info(`Built content map for ${Object.keys(assetToCasket).length} items`);
 
-  // 4. Make room if needed (park oldest unlocked)
+  // 4. Make room if needed (park oldest unlocked items)
   const freeSlots = SAFE_INVENTORY_SIZE - webInv.length;
   if (bringIn.length > freeSlots) {
     const overflow = bringIn.length - freeSlots;
-    console.log(`INFO Need to park ${overflow} overflow items`);
+    logger.info(`Need to park ${overflow} items to make room`);
 
-    // pick victims
+    // Pick victims (items not in locked_assetids)
     const victims = webInv
-      .filter(it => !locked_assetids.includes(it.assetid))
+      .filter(item => !locked_assetids.includes(item.assetid))
       .slice(0, overflow);
-    console.log(`INFO Selected ${victims.length} victims`);
+    
+    logger.info(`Selected ${victims.length} items to park`);
 
-    // park each victim in round-robin
-    let ci = 0;
-    for (const v of victims) {
-      // find next casket with room
+    // Park each victim in round-robin fashion
+    let casketIndex = 0;
+    for (const victim of victims) {
+      // Find next casket with room
       let attempts = 0;
-      while (attempts < caskets.length) {
-        const ck = caskets[ci % caskets.length];
-        if (ck.itemCount < MAX_CASKET_SIZE) {
-          await csgo.addToCasket(ck.casketId, v.assetid);
-          await delay(DELAY_MS);
-          ck.itemCount++;
-          console.log(`DEBUG Parked ${v.assetid} → casket ${ck.casketId}`);
-          break;
+      let parked = false;
+      
+      while (attempts < caskets.length && !parked) {
+        const casket = caskets[casketIndex % caskets.length];
+        
+        if (casket.itemCount < MAX_CASKET_SIZE) {
+          try {
+            csgo.addToCasket(casket.casketId, victim.assetid);
+            await delay(DELAY_MS);
+            casket.itemCount++;
+            logger.info(`Parked ${victim.assetid} (${victim.market_hash_name || 'unknown'}) → casket ${casket.casketName}`);
+            parked = true;
+          } catch (err) {
+            logger.error(`Failed to park ${victim.assetid} in casket ${casket.casketId}:`, err);
+          }
         }
-        ci++; attempts++;
+        
+        casketIndex++;
+        attempts++;
       }
-      if (attempts === caskets.length) {
-        console.warn(`WARN No casket had room for ${v.assetid}`);
+      
+      if (!parked) {
+        logger.warn(`Could not find casket with room for ${victim.assetid}`);
       }
     }
   }
 
-  // 5. Pull requested items out in one pass
-  for (const aid of bringIn) {
-    const casketId = contentMap[aid];
+  // 5. Pull requested items out of storage
+  const moveResults = {
+    successful: [],
+    failed: []
+  };
+  
+  for (const assetId of bringIn) {
+    const casketId = assetToCasket[assetId];
+    
     if (!casketId) {
-      console.warn(`WARN ${aid} not found in any casket`);
+      logger.warn(`Asset ${assetId} not found in any casket`);
+      moveResults.failed.push(assetId);
       continue;
     }
-    console.log(`INFO Removing ${aid} from casket ${casketId}`);
-    await csgo.removeFromCasket(casketId, aid);
-    await delay(DELAY_MS);
+    
+    try {
+      logger.info(`Removing ${assetId} from casket ${casketId}`);
+      csgo.removeFromCasket(casketId, assetId);
+      await delay(DELAY_MS);
+      moveResults.successful.push(assetId);
+    } catch (err) {
+      logger.error(`Failed to remove ${assetId} from casket ${casketId}:`, err);
+      moveResults.failed.push(assetId);
+    }
   }
 
-  console.log(`INFO Automatic moves finished (totalElapsed=${Date.now() - start}ms)`);
-}
+  // 6. Log summary
+  const elapsed = Date.now() - start;
+  logger.info(`Automatic moves finished (totalElapsed=${elapsed}ms)`);
+  logger.info(`Move summary:`);
+  logger.info(`  - Successfully moved: ${moveResults.successful.length} items`);
+  logger.info(`  - Failed to move: ${moveResults.failed.length} items`);
+  
+  if (moveResults.failed.length > 0) {
+    logger.warn(`Failed assetIds: ${moveResults.failed.join(', ')}`);
+  }
 
+  // Return results for UI feedback if needed
+  return {
+    success: moveResults.failed.length === 0,
+    moved: moveResults.successful.length,
+    failed: moveResults.failed.length,
+    totalTime: elapsed
+  };
+}
 
 
 

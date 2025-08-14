@@ -160,14 +160,23 @@ async enrichItem(rawItem) {
   }
 
   try {
-    // Handle different possible ID fields
     const itemId = rawItem.id || rawItem.assetid || rawItem.itemid;
     
-    // Debug log
     if (!this.itemsGame.items || Object.keys(this.itemsGame.items).length === 0) {
       this.logger.error('Items game data not loaded!');
       throw new Error('Game data not initialized');
     }
+
+    // Check for special item types
+    const defIndex = rawItem.def_index || rawItem.defindex;
+    let itemType = 'weapon';
+    
+    if (defIndex === 1209) itemType = 'sticker';
+    else if (defIndex === 1348) itemType = 'graffiti';
+    else if (defIndex === 1201) itemType = 'storage_unit';
+    else if (rawItem.music_index !== undefined) itemType = 'music_kit';
+    else if (defIndex >= 4001 && defIndex <= 4999) itemType = 'case';
+    else if (defIndex >= 1001 && defIndex <= 1200) itemType = 'key';
 
     // Build the image path
     const imagePath = this.buildImageUrl(rawItem);
@@ -176,17 +185,18 @@ async enrichItem(rawItem) {
       // IDs
       id: itemId,
       assetid: itemId,
+      def_index: defIndex,
       
-      // Use existing fields if available
-      def_index: rawItem.def_index || rawItem.defindex,
+      // Item type
+      item_type: itemType,
       
       // Build name
       item_name: this.buildItemName(rawItem),
       market_hash_name: '', // Will be set to item_name
       
-      // Image URLs - IMPORTANT: icon_url should be just the path
-      icon_url: imagePath, // This is what renderer will use
-      item_url: imagePath, // Keep the same
+      // Image URLs
+      icon_url: imagePath,
+      item_url: imagePath,
       
       // Trade info
       tradable: this.isTradable(rawItem),
@@ -215,12 +225,16 @@ async enrichItem(rawItem) {
     // Check for StatTrak
     enriched.stattrak = this.hasStatTrak(rawItem);
     
+    // Special handling for stickers
+    if (itemType === 'sticker' && rawItem.stickers && rawItem.stickers[0]) {
+      enriched.sticker_id = rawItem.stickers[0].sticker_id;
+    }
+    
     // Handle storage units
-    if (rawItem.def_index === 1201 || rawItem.defindex === 1201) {
+    if (itemType === 'storage_unit') {
       enriched.is_storage_unit = true;
       enriched.item_count = rawItem.casket_contained_item_count || 0;
       enriched.custom_name = rawItem.custom_name || 'Storage Unit';
-      // Storage units have a specific icon
       enriched.icon_url = '-9a81dlWLwJ2UUGcVs_nsVtzdOEdtWwKGZZLQHTxDZ7I56KU0Zwwo4NUX4oFJZEHLbXX7gNTPcUxqAhWSVieFOX71szWCgwsdlZRsuz0L1M1iqrOIGUauNiyzdmKxKWsMrnXkjlQsIthhO5eh9dfdg';
     }
 
@@ -244,52 +258,115 @@ async enrichItem(rawItem) {
 }
 
   buildItemName(item) {
-    const defIndex = item.def_index;
-    const itemDef = this.itemsGame.items?.[defIndex];
-    
-    if (!itemDef) {
-      return `Unknown Item #${defIndex}`;
+  const defIndex = item.def_index || item.defindex;
+  const itemDef = this.itemsGame.items?.[defIndex];
+  
+  // Special handling for stickers (def_index 1209)
+  if (defIndex === 1209 && item.stickers && item.stickers[0]) {
+    const stickerId = item.stickers[0].sticker_id;
+    const stickerKit = this.itemsGame.sticker_kits?.[stickerId];
+    if (stickerKit && stickerKit.item_name) {
+      const stickerName = this.translate(stickerKit.item_name);
+      return stickerName || `Sticker #${stickerId}`;
     }
-
-    let baseName = '';
-    
-    // Get base item name
-    if (itemDef.item_name) {
-      baseName = this.translate(itemDef.item_name);
-    } else if (itemDef.prefab && this.itemsGame.prefabs?.[itemDef.prefab]) {
-      const prefab = this.itemsGame.prefabs[itemDef.prefab];
-      if (prefab.item_name) {
-        baseName = this.translate(prefab.item_name);
-      }
-    } else {
-      baseName = itemDef.name || `Item #${defIndex}`;
-    }
-
-    // Add skin name if present
-    if (item.paint_index && this.itemsGame.paint_kits?.[item.paint_index]) {
-      const paintKit = this.itemsGame.paint_kits[item.paint_index];
-      const skinName = this.translate(paintKit.description_tag);
-      if (skinName) {
-        baseName = `${baseName} | ${skinName}`;
-      }
-    }
-
-    // Add StatTrak prefix
-    if (this.hasStatTrak(item)) {
-      baseName = `StatTrak™ ${baseName}`;
-    }
-
-    // Add Souvenir prefix
-    if (this.isSouvenir(item)) {
-      baseName = `Souvenir ${baseName}`;
-    }
-
-    return baseName;
   }
+  
+  // Special handling for sealed graffiti (def_index 1348)
+  if (defIndex === 1348 && item.stickers && item.stickers[0]) {
+    const stickerId = item.stickers[0].sticker_id;
+    const stickerKit = this.itemsGame.sticker_kits?.[stickerId];
+    if (stickerKit && stickerKit.item_name) {
+      const graffitiName = this.translate(stickerKit.item_name);
+      return `Sealed Graffiti | ${graffitiName}`;
+    }
+  }
+  
+  // Special handling for music kits
+  if (item.music_index !== undefined) {
+    const musicKit = this.itemsGame.music_kits?.[item.music_index];
+    if (musicKit) {
+      const musicName = this.translate(musicKit.loc_name);
+      const musicArtist = this.translate(musicKit.loc_description);
+      return `Music Kit | ${musicArtist}, ${musicName}`;
+    }
+  }
+  
+  if (!itemDef) {
+    return `Unknown Item #${defIndex}`;
+  }
+
+  let baseName = '';
+  
+  // Get base item name
+  if (itemDef.item_name) {
+    baseName = this.translate(itemDef.item_name);
+  } else if (itemDef.prefab && this.itemsGame.prefabs?.[itemDef.prefab]) {
+    const prefab = this.itemsGame.prefabs[itemDef.prefab];
+    if (prefab.item_name) {
+      baseName = this.translate(prefab.item_name);
+    }
+  } else {
+    baseName = itemDef.name || `Item #${defIndex}`;
+  }
+
+  // Add skin name if present
+  if (item.paint_index && this.itemsGame.paint_kits?.[item.paint_index]) {
+    const paintKit = this.itemsGame.paint_kits[item.paint_index];
+    const skinName = this.translate(paintKit.description_tag);
+    if (skinName) {
+      baseName = `${baseName} | ${skinName}`;
+    }
+  }
+
+  // Add StatTrak prefix
+  if (this.hasStatTrak(item)) {
+    baseName = `StatTrak™ ${baseName}`;
+  }
+
+  // Add Souvenir prefix
+  if (this.isSouvenir(item)) {
+    baseName = `Souvenir ${baseName}`;
+  }
+
+  return baseName;
+}
 
   buildImageUrl(item) {
   const defIndex = item.def_index || item.defindex;
   const itemDef = this.itemsGame.items?.[defIndex];
+  
+  // Special handling for stickers (def_index 1209)
+  if (defIndex === 1209 && item.stickers && item.stickers[0]) {
+    const stickerId = item.stickers[0].sticker_id;
+    const stickerKit = this.itemsGame.sticker_kits?.[stickerId];
+    if (stickerKit) {
+      // Check for patch or sticker
+      if (stickerKit.patch_material) {
+        return `econ/patches/${stickerKit.patch_material}`;
+      } else if (stickerKit.sticker_material) {
+        return `econ/stickers/${stickerKit.sticker_material}`;
+      } else if (stickerKit.image_inventory) {
+        return stickerKit.image_inventory;
+      }
+    }
+  }
+  
+  // Special handling for sealed graffiti
+  if (defIndex === 1348 && item.stickers && item.stickers[0]) {
+    const stickerId = item.stickers[0].sticker_id;
+    const stickerKit = this.itemsGame.sticker_kits?.[stickerId];
+    if (stickerKit && stickerKit.image_inventory) {
+      return stickerKit.image_inventory;
+    }
+  }
+  
+  // Special handling for music kits
+  if (item.music_index !== undefined) {
+    const musicKit = this.itemsGame.music_kits?.[item.music_index];
+    if (musicKit && musicKit.image_inventory) {
+      return musicKit.image_inventory;
+    }
+  }
   
   if (!itemDef) {
     return '';
@@ -297,37 +374,22 @@ async enrichItem(rawItem) {
 
   // Most items have image_inventory with the CDN hash
   if (itemDef.image_inventory) {
-    // Check if it starts with a CDN hash (Steam's format)
     if (itemDef.image_inventory.startsWith('-9a81')) {
       return itemDef.image_inventory;
     }
-    // Check if it's a path like "econ/weapons/..."
     if (itemDef.image_inventory.startsWith('econ/')) {
-      // For paths, we need to get the actual CDN hash
-      // For now, return the path - the game files should have the hash
       return itemDef.image_inventory;
     }
-    // Otherwise return as-is
     return itemDef.image_inventory;
   }
 
   // For weapons with skins
   if (item.paint_index && this.itemsGame.paint_kits?.[item.paint_index]) {
     const paintKit = this.itemsGame.paint_kits[item.paint_index];
-    // Try to get the image from paint kit
     if (paintKit.image_inventory) {
       return paintKit.image_inventory;
     }
-    // Fallback to generated path
     return `econ/default_generated/${itemDef.name}_${paintKit.name}_light_large`;
-  }
-
-  // For stickers
-  if (item.sticker_id && this.itemsGame.sticker_kits?.[item.sticker_id]) {
-    const stickerKit = this.itemsGame.sticker_kits[item.sticker_id];
-    if (stickerKit.sticker_material) {
-      return `econ/stickers/${stickerKit.sticker_material}`;
-    }
   }
 
   // For base weapons
@@ -335,7 +397,6 @@ async enrichItem(rawItem) {
     return `econ/weapons/base_weapons/${itemDef.name}`;
   }
 
-  // Default fallback
   return '';
 }
 
@@ -392,8 +453,34 @@ async enrichItem(rawItem) {
     
     // Check tradable_after date
     if (item.tradable_after) {
-      const tradeDate = new Date(item.tradable_after * 1000);
-      if (tradeDate > new Date()) return false;
+      let tradeDate;
+      
+      // Handle both Unix timestamp and ISO string formats
+      if (typeof item.tradable_after === 'string') {
+        // It's already an ISO date string
+        tradeDate = new Date(item.tradable_after);
+      } else if (typeof item.tradable_after === 'number') {
+        // It's a Unix timestamp (seconds since epoch)
+        tradeDate = new Date(item.tradable_after * 1000);
+      } else {
+        // Unknown format, assume tradable
+        console.warn(`Unknown tradable_after format: ${item.tradable_after}`);
+        return true;
+      }
+      
+      // Check if still trade-locked
+      if (!isNaN(tradeDate.getTime()) && tradeDate > new Date()) {
+        return false;
+      }
+    }
+    
+    // Check for other trade restrictions
+    if (item.attribute) {
+      // Check for "Not Tradable" attribute (different from trade lock)
+      const notTradableAttr = item.attribute.find(attr => attr.def_index === 152);
+      if (notTradableAttr) {
+        return false;
+      }
     }
     
     return true;
