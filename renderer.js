@@ -1347,6 +1347,13 @@ function setupEventListeners() {
 function setupIPCHandlers() {
 
 
+
+
+
+
+
+
+
 window.electronAPI.onPleaseEnterEmail(() => {
   hideLoading();
   showModal('email-request-modal');
@@ -1466,6 +1473,40 @@ window.electronAPI.onPleaseEnterEmail(() => {
     // Show a modal or toast notification
     showModal('device-reauth-modal');
   });
+
+
+  // In renderer.js setupIPCHandlers()
+window.electronAPI.onMoveVerificationFailed((data) => {
+  hideLoading();
+  
+  const { missing, warnings } = data;
+  
+  let message = 'Failed to get all required items:\n\n';
+  
+  // Show what's missing
+  missing.forEach(item => {
+    message += `❌ ${item.market_hash_name}\n`;
+    message += `   Need: ${item.required}, Have: ${item.actual}, Missing: ${item.deficit}\n\n`;
+  });
+  
+  // Show any naming warnings
+  if (warnings && warnings.length > 0) {
+    message += '\n⚠️ Possible naming issues detected:\n';
+    warnings.forEach(w => {
+      message += `Expected: "${w.expected}"\n`;
+      message += `Found: "${w.found}" (${w.count} items)\n\n`;
+    });
+  }
+  
+  // Show detailed error modal
+  elements.warningMessage.textContent = message;
+  showModal('warning-modal');
+  
+  // Allow retry
+  setTimeout(() => {
+    showModal('move-items-modal');
+  }, 5000);
+});
 
 
 

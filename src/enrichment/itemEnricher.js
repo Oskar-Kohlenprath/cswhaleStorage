@@ -257,7 +257,8 @@ async enrichItem(rawItem) {
   }
 }
 
-  buildItemName(item) {
+
+buildItemName(item) {
   const defIndex = item.def_index || item.defindex;
   const itemDef = this.itemsGame.items?.[defIndex];
   
@@ -267,8 +268,10 @@ async enrichItem(rawItem) {
     const stickerKit = this.itemsGame.sticker_kits?.[stickerId];
     if (stickerKit && stickerKit.item_name) {
       const stickerName = this.translate(stickerKit.item_name);
-      return stickerName || `Sticker #${stickerId}`;
+      // ✅ Add the "Sticker | " prefix to match Steam's market format
+      return stickerName ? `Sticker | ${stickerName}` : `Sticker #${stickerId}`;
     }
+    return `Sticker #${stickerId}`; // Fallback if no kit found
   }
   
   // Special handling for sealed graffiti (def_index 1348)
@@ -279,6 +282,7 @@ async enrichItem(rawItem) {
       const graffitiName = this.translate(stickerKit.item_name);
       return `Sealed Graffiti | ${graffitiName}`;
     }
+    return `Sealed Graffiti #${stickerId}`; // Fallback
   }
   
   // Special handling for music kits
@@ -330,6 +334,8 @@ async enrichItem(rawItem) {
 
   return baseName;
 }
+
+
 
   buildImageUrl(item) {
   const defIndex = item.def_index || item.defindex;
@@ -470,6 +476,7 @@ async enrichItem(rawItem) {
       
       // Check if still trade-locked
       if (!isNaN(tradeDate.getTime()) && tradeDate > new Date()) {
+
         return false;
       }
     }

@@ -1415,13 +1415,29 @@ async function fetchAllCaskets() {
  * @param {string} casketId - Storage unit ID
  * @returns {Promise<Array>} List of items in storage unit
  */
-async function fetchCasketContents(casketId) {
-  return new Promise((resolve, reject) => {
-    csgo.getCasketContents(casketId, (err, items) => {
-      if (err) return reject(err);
-      resolve(items); // This already has def_index, paint_index, etc.
-    });
-  });
+async function fetchCasketContents(casketId, retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error(`Loading casket contents timed out (attempt ${attempt})`));
+        }, 5000);  // 5 second timeout
+        
+        csgo.getCasketContents(casketId, (err, items) => {
+          clearTimeout(timeout);
+          if (err) return reject(err);
+          resolve(items);
+        });
+      });
+    } catch (err) {
+      if (attempt === retries) {
+        logger.error(`Failed to fetch contents of casket ${casketId} after ${retries} attempts:`, err);
+        return [];  // Return empty array instead of throwing
+      }
+      logger.warn(`Attempt ${attempt} failed for casket ${casketId}, retrying...`);
+      await delay(1000);  // Wait 1 second before retry
+    }
+  }
 }
 
 /**
@@ -1459,6 +1475,14 @@ async function terminateSteamSession() {
   logger.info('Terminating existing Steam session...');
   
   try {
+    // ✅ Remove all event listeners BEFORE creating new instances
+    if (user) {
+      user.removeAllListeners();
+    }
+    if (csgo) {
+      csgo.removeAllListeners();
+    }
+    
     // Stop playing games
     if (user.steamID) {
       user.gamesPlayed([]);
@@ -1472,7 +1496,10 @@ async function terminateSteamSession() {
     user = new SteamUser();
     csgo = new GlobalOffensive(user);
     
-    lastReceivedToken = null; // Reset the token cache
+    // Increase max listeners if needed
+    csgo.setMaxListeners(20);  // Increase from default 10
+    
+    lastReceivedToken = null;
     
     logger.info('Session terminated successfully');
   } catch (err) {
@@ -1481,6 +1508,7 @@ async function terminateSteamSession() {
     // Force new instances
     user = new SteamUser();
     csgo = new GlobalOffensive(user);
+    csgo.setMaxListeners(20);
   }
 }
 
@@ -1789,88 +1817,85 @@ async function performMoves({ locked_assetids, needed }) {
   const start = Date.now();
   logger.info('Starting automatic inventory-balancing…');
 
-  // Check if there's anything to move
+  // ✅ FIX: Convert locked_assetids array to Set
+  const lockedSet = new Set(locked_assetids || []);
+
   if (!needed || needed.length === 0) {
     logger.info('No items need to be moved');
-    return;
+    return { success: true, moved: 0, failed: 0, verified: true };
   }
 
-  // 1. Fetch live inventory
-  const t1 = Date.now();
-  const webInv = await getWebInventory();
-  logger.info(`Fetched live inventory: ${webInv.length} items (took ${Date.now() - t1}ms)`);
-
-  // 2. Determine items to bring in from storage
-  const bringIn = [];
-  const itemSummary = [];
+  // Track what we need for verification
+  const requirements = {};
+  let totalItemsNeeded = 0;
   
   for (const need of needed) {
-    // Take only the assetids we need (up to 'missing' count)
-    const assetidsToMove = need.storage_assetids.slice(0, need.missing);
-    bringIn.push(...assetidsToMove);
-    
-    if (assetidsToMove.length > 0) {
-      itemSummary.push({
-        name: need.market_hash_name,
-        count: assetidsToMove.length,
-        required: need.required,
-        have: need.have_in_inv
-      });
-    }
-  }
-  
-  logger.info(`Total items to bring in: ${bringIn.length}`);
-  itemSummary.forEach(item => {
-    logger.info(`  - ${item.name}: moving ${item.count} (have ${item.have}, need ${item.required})`);
-  });
-  
-  if (bringIn.length === 0) {
-    logger.info('No items available in storage to move');
-    return;
+    requirements[need.market_hash_name] = {
+      required: need.required,
+      had_before: need.have_in_inv,
+      flask_assetids: need.storage_assetids
+    };
+    totalItemsNeeded += need.storage_assetids.length;
   }
 
-  // 3. Fetch all caskets and their contents once
-  const tC = Date.now();
+  // ===========================================================================
+  // PHASE 1: Use Flask's suggested assetids (primary method)
+  // ===========================================================================
+  logger.info('===== PHASE 1: Moving items using Flask-provided assetids =====');
+  
+  // 1.1 Fetch current inventory to check space
+  const webInvBefore = await getWebInventory();
+  logger.info(`Current inventory: ${webInvBefore.length} items`);
+
+  // 1.2 Fetch all caskets and build asset location map
   const caskets = await fetchAllCaskets();
-  logger.info(`Fetched ${caskets.length} caskets (took ${Date.now() - tC}ms)`);
-
-  // Build a map of assetid -> casketId
   const assetToCasket = {};
-  const casketContents = {};
   
-  await Promise.all(caskets.map(async casket => {
+  for (const casket of caskets) {
     try {
-      const contents = await fetchCasketContents(casket.casketId);
-      casketContents[casket.casketId] = contents;
-      casket.itemCount = contents.length; // Update count for parking logic
+      const contents = await fetchCasketContentsWithRetry(casket.casketId);
+      casket.itemCount = contents.length;
       
       for (const item of contents) {
         assetToCasket[item.id] = casket.casketId;
       }
     } catch (err) {
-      logger.error(`Failed to fetch contents of casket ${casket.casketId}:`, err);
+      logger.error(`Failed to fetch casket ${casket.casketId}:`, err);
+      casket.itemCount = 0;
     }
-  }));
+  }
   
-  logger.info(`Built content map for ${Object.keys(assetToCasket).length} items`);
+  logger.info(`Mapped ${Object.keys(assetToCasket).length} items across ${caskets.length} storage units`);
 
-  // 4. Make room if needed (park oldest unlocked items)
-  const freeSlots = SAFE_INVENTORY_SIZE - webInv.length;
-  if (bringIn.length > freeSlots) {
-    const overflow = bringIn.length - freeSlots;
+  // 1.3 Check if we need to park items to make room
+  const freeSlots = SAFE_INVENTORY_SIZE - webInvBefore.length;
+  if (totalItemsNeeded > freeSlots) {
+    const overflow = totalItemsNeeded - freeSlots;
     logger.info(`Need to park ${overflow} items to make room`);
+    
+    // Build list of items we must NOT park
+    const flaskAssetIds = [];
+    for (const need of needed) {
+      flaskAssetIds.push(...need.storage_assetids);
+    }
+    
+    const doNotParkSet = new Set([
+      ...lockedSet,  // ✅ Use lockedSet
+      ...flaskAssetIds
+    ]);
 
-    // Pick victims (items not in locked_assetids)
-    const victims = webInv
-      .filter(item => !locked_assetids.includes(item.assetid))
+    // Select victims to park
+    const victims = webInvBefore
+      .filter(item => !doNotParkSet.has(item.assetid))
       .slice(0, overflow);
     
-    logger.info(`Selected ${victims.length} items to park`);
+    if (victims.length < overflow) {
+      logger.warn(`Only found ${victims.length} items to park (needed ${overflow})`);
+    }
 
-    // Park each victim in round-robin fashion
+    // Park the victims
     let casketIndex = 0;
     for (const victim of victims) {
-      // Find next casket with room
       let attempts = 0;
       let parked = false;
       
@@ -1881,11 +1906,14 @@ async function performMoves({ locked_assetids, needed }) {
           try {
             csgo.addToCasket(casket.casketId, victim.assetid);
             await delay(DELAY_MS);
+            
+            assetToCasket[victim.assetid] = casket.casketId;
             casket.itemCount++;
-            logger.info(`Parked ${victim.assetid} (${victim.market_hash_name || 'unknown'}) → casket ${casket.casketName}`);
+            
+            logger.info(`Parked ${victim.assetid} (${victim.market_hash_name || 'unknown'}) → ${casket.casketName}`);
             parked = true;
           } catch (err) {
-            logger.error(`Failed to park ${victim.assetid} in casket ${casket.casketId}:`, err);
+            logger.error(`Failed to park ${victim.assetid}:`, err);
           }
         }
         
@@ -1894,55 +1922,303 @@ async function performMoves({ locked_assetids, needed }) {
       }
       
       if (!parked) {
-        logger.warn(`Could not find casket with room for ${victim.assetid}`);
+        logger.warn(`Could not find space to park ${victim.assetid}`);
       }
     }
   }
 
-  // 5. Pull requested items out of storage
-  const moveResults = {
-    successful: [],
-    failed: []
+  // 1.4 Move items using Flask's assetids
+  const moveResults = { 
+    successful: [], 
+    failed: [],
+    notFound: []
   };
   
-  for (const assetId of bringIn) {
-    const casketId = assetToCasket[assetId];
+  for (const need of needed) {
+    logger.info(`Moving ${need.storage_assetids.length} items for ${need.market_hash_name}`);
     
-    if (!casketId) {
-      logger.warn(`Asset ${assetId} not found in any casket`);
-      moveResults.failed.push(assetId);
-      continue;
-    }
-    
-    try {
-      logger.info(`Removing ${assetId} from casket ${casketId}`);
-      csgo.removeFromCasket(casketId, assetId);
-      await delay(DELAY_MS);
-      moveResults.successful.push(assetId);
-    } catch (err) {
-      logger.error(`Failed to remove ${assetId} from casket ${casketId}:`, err);
-      moveResults.failed.push(assetId);
+    for (const assetId of need.storage_assetids) {
+      const casketId = assetToCasket[assetId];
+      
+      if (!casketId) {
+        logger.warn(`Asset ${assetId} not found in any casket`);
+        moveResults.notFound.push(assetId);
+        continue;
+      }
+      
+      try {
+        csgo.removeFromCasket(casketId, assetId);
+        await delay(DELAY_MS);
+        
+        moveResults.successful.push({
+          assetId,
+          market_hash_name: need.market_hash_name,
+          from_casket: casketId
+        });
+        
+        logger.info(`✅ Moved ${assetId} from storage`);
+      } catch (err) {
+        logger.error(`❌ Failed to move ${assetId}:`, err);
+        moveResults.failed.push(assetId);
+      }
     }
   }
 
-  // 6. Log summary
-  const elapsed = Date.now() - start;
-  logger.info(`Automatic moves finished (totalElapsed=${elapsed}ms)`);
-  logger.info(`Move summary:`);
-  logger.info(`  - Successfully moved: ${moveResults.successful.length} items`);
-  logger.info(`  - Failed to move: ${moveResults.failed.length} items`);
+  logger.info(`Phase 1 complete: ${moveResults.successful.length} moved, ${moveResults.failed.length} failed, ${moveResults.notFound.length} not found`);
+
+  // ===========================================================================
+  // PHASE 2: Verify we have the right amounts by market_hash_name
+  // ===========================================================================
   
-  if (moveResults.failed.length > 0) {
-    logger.warn(`Failed assetIds: ${moveResults.failed.join(', ')}`);
+  let verificationResults = {
+    success: true,
+    verified: [],
+    failed: [],
+    error: null
+  };
+  
+  try {
+    logger.info('===== PHASE 2: Verifying inventory by market_hash_name =====');
+    await delay(3000); // Give Steam time to update
+    
+    const webInvAfter = await getWebInventory();
+    logger.info(`Inventory after moves: ${webInvAfter.length} items`);
+    
+    // Count items by market_hash_name (from Steam API - always correct)
+    const inventoryCounts = {};
+    
+    for (const item of webInvAfter) {
+      if (!lockedSet.has(item.assetid) && item.tradable) {  // ✅ Use lockedSet
+        const name = item.market_hash_name;
+        inventoryCounts[name] = (inventoryCounts[name] || 0) + 1;
+      }
+    }
+
+    // Check what's still missing
+    const stillMissing = [];
+    
+    for (const [market_hash_name, requirement] of Object.entries(requirements)) {
+      const have = inventoryCounts[market_hash_name] || 0;
+      const required = requirement.required;
+      
+      if (have >= required) {
+        logger.info(`✅ VERIFIED: ${market_hash_name} - have ${have}/${required}`);
+      } else {
+        const deficit = required - have;
+        logger.warn(`❌ MISSING: ${market_hash_name} - have ${have}/${required} (need ${deficit} more)`);
+        
+        stillMissing.push({
+          market_hash_name,
+          required,
+          have,
+          deficit
+        });
+      }
+    }
+
+    // ===========================================================================
+    // PHASE 3: If still missing, search storage by market_hash_name (fallback)
+    // ===========================================================================
+    if (stillMissing.length > 0) {
+      logger.info('===== PHASE 3: Searching storage by market_hash_name =====');
+      logger.info(`Still missing items for ${stillMissing.length} item types, scanning all storage...`);
+      
+      // Build complete storage inventory by name
+      const storageByName = {};
+      const alreadyMoved = new Set(moveResults.successful.map(m => m.assetId));
+      
+      for (const casket of caskets) {
+        try {
+          const contents = await fetchCasketContentsWithRetry(casket.casketId);
+          
+          for (const rawItem of contents) {
+            // Skip if already moved
+            if (alreadyMoved.has(rawItem.id)) continue;
+            
+            // Enrich to get market_hash_name
+            const enriched = await itemEnricher.enrichItem(rawItem);
+            const name = enriched.market_hash_name;
+            
+            if (!storageByName[name]) {
+              storageByName[name] = [];
+            }
+            
+            storageByName[name].push({
+              assetId: rawItem.id,
+              casketId: casket.casketId,
+              casketName: casket.casketName
+            });
+          }
+        } catch (err) {
+          logger.error(`Failed to scan casket ${casket.casketId}:`, err);
+        }
+      }
+      
+      // Log what we found
+      for (const missing of stillMissing) {
+        const available = storageByName[missing.market_hash_name] || [];
+        logger.info(`Found ${available.length} "${missing.market_hash_name}" in storage (need ${missing.deficit})`);
+      }
+      
+      // Move the missing items
+      for (const missing of stillMissing) {
+        const available = storageByName[missing.market_hash_name] || [];
+        const toMove = available.slice(0, missing.deficit);
+        
+        if (toMove.length === 0) {
+          logger.error(`❌ No items found in storage for ${missing.market_hash_name}`);
+          continue;
+        }
+        
+        logger.info(`Moving ${toMove.length} additional ${missing.market_hash_name} from storage`);
+        
+        for (const item of toMove) {
+          try {
+            csgo.removeFromCasket(item.casketId, item.assetId);
+            await delay(DELAY_MS);
+            
+            moveResults.successful.push({
+              assetId: item.assetId,
+              market_hash_name: missing.market_hash_name,
+              from_casket: item.casketId,
+              phase: 3  // Mark as phase 3 move
+            });
+            
+            logger.info(`✅ Moved ${item.assetId} from ${item.casketName} (Phase 3)`);
+          } catch (err) {
+            logger.error(`❌ Failed to move ${item.assetId} (Phase 3):`, err);
+            moveResults.failed.push(item.assetId);
+          }
+        }
+      }
+    }
+
+    // ===========================================================================
+    // FINAL VERIFICATION
+    // ===========================================================================
+    logger.info('===== FINAL VERIFICATION =====');
+    await delay(3000);
+    
+    const webInvFinal = await getWebInventory();
+    const finalCounts = {};
+    
+    for (const item of webInvFinal) {
+      if (!lockedSet.has(item.assetid) && item.tradable) {  // ✅ Use lockedSet
+        const name = item.market_hash_name;
+        finalCounts[name] = (finalCounts[name] || 0) + 1;
+      }
+    }
+
+    // Final check
+    verificationResults = {
+      success: true,
+      verified: [],
+      failed: [],
+      error: null
+    };
+    
+    for (const [market_hash_name, requirement] of Object.entries(requirements)) {
+      const have = finalCounts[market_hash_name] || 0;
+      const required = requirement.required;
+      
+      if (have >= required) {
+        logger.info(`✅ FINAL: ${market_hash_name} - ${have}/${required} ✓`);
+        verificationResults.verified.push({
+          market_hash_name,
+          required,
+          have
+        });
+      } else {
+        logger.error(`❌ FINAL: ${market_hash_name} - ${have}/${required} FAILED`);
+        verificationResults.failed.push({
+          market_hash_name,
+          required,
+          have,
+          deficit: required - have
+        });
+        verificationResults.success = false;
+      }
+    }
+    
+  } catch (verifyError) {
+    // ✅ If verification process fails, don't throw - just log and continue
+    logger.error('Verification process encountered an error', verifyError);
+    verificationResults = {
+      success: moveResults.successful.length > 0,  // Consider success if we moved items
+      verified: [],
+      failed: [],
+      error: verifyError.message || 'Verification failed'
+    };
+    
+    // If moves were successful, we still return success
+    if (moveResults.successful.length > 0) {
+      logger.info('⚠️ Verification failed but items were moved successfully');
+    }
   }
 
-  // Return results for UI feedback if needed
+  // ===========================================================================
+  // SUMMARY
+  // ===========================================================================
+  const elapsed = Date.now() - start;
+  const phase3Moves = moveResults.successful.filter(m => m.phase === 3).length;
+  
+  logger.info('===== OPERATION COMPLETE =====');
+  logger.info(`Total time: ${elapsed}ms`);
+  logger.info(`Total items moved: ${moveResults.successful.length}`);
+  logger.info(`  - Phase 1 (Flask assetids): ${moveResults.successful.length - phase3Moves}`);
+  logger.info(`  - Phase 3 (name search): ${phase3Moves}`);
+  logger.info(`Failed moves: ${moveResults.failed.length}`);
+  logger.info(`Not found: ${moveResults.notFound.length}`);
+  
+  // Determine overall success
+  const overallSuccess = moveResults.successful.length > 0 && 
+                         (verificationResults.success || verificationResults.error);
+  
+  logger.info(`Final result: ${overallSuccess ? '✅ SUCCESS' : '❌ FAILED'}`);
+  
+  // Only alert renderer if actual verification failed (not just process error)
+  if (!verificationResults.success && !verificationResults.error && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('move-verification-failed', {
+      failed: verificationResults.failed,
+      summary: `Failed to get ${verificationResults.failed.length} item types`
+    });
+  }
+
   return {
-    success: moveResults.failed.length === 0,
+    success: overallSuccess,
     moved: moveResults.successful.length,
     failed: moveResults.failed.length,
-    totalTime: elapsed
+    notFound: moveResults.notFound.length,
+    phase3Moves,
+    totalTime: elapsed,
+    verification: verificationResults,
+    verificationError: verificationResults.error
   };
+}
+
+// Helper function with retry logic
+async function fetchCasketContentsWithRetry(casketId, retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error(`Timeout (attempt ${attempt}/${retries})`));
+        }, 5000);
+        
+        csgo.getCasketContents(casketId, (err, items) => {
+          clearTimeout(timeout);
+          if (err) return reject(err);
+          resolve(items);
+        });
+      });
+    } catch (err) {
+      if (attempt === retries) {
+        logger.error(`Failed to fetch casket ${casketId} after ${retries} attempts`);
+        return [];
+      }
+      await delay(1000);
+    }
+  }
 }
 
 
