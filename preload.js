@@ -24,6 +24,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Get all saved accounts
   getSavedAccounts: () => ipcRenderer.invoke('get-saved-accounts'),
   
+
+
+  onForceRefreshAccounts: (callback) => ipcRenderer.on('force-refresh-accounts', callback),
+
+
+  
   // Log in with a stored refresh token
   loginWithSavedAccount: (steamId) => ipcRenderer.invoke('login-with-refresh-token', steamId),
   

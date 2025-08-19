@@ -1348,7 +1348,13 @@ function setupIPCHandlers() {
 
 
 
+window.electronAPI.onForceRefreshAccounts(() => {
+  logger.log('Received force-refresh-accounts signal');
+  // If we're on login view, refresh the accounts
+  
+    loadSavedAccounts();
 
+});
 
 
 
@@ -1575,6 +1581,8 @@ function initApp() {
   setupUpdateHandlers(); // Add this line
   logger.log('Application initialized');
 }
+
+
 
 // Run initialization when DOM is loaded
 document.addEventListener('DOMContentLoaded', initApp);

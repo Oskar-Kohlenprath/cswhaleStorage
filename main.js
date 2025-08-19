@@ -490,31 +490,40 @@ app.whenReady().then(async () => {
   // Validate tokens
   await validateAllStoredTokens();
 
-  
+  // CHANGE THIS: Don't await item enricher, let it run in background
+  // OLD WAY (blocking):
+  // itemEnricher = new ItemEnricher(logger);
+  // await itemEnricher.initialize();
 
-  // Initialize item enricher
+  // NEW WAY (non-blocking):
   itemEnricher = new ItemEnricher(logger);
   itemEnricher.initialize().catch(err => {
     logger.error('Failed to initialize item enricher', err);
   });
 
-
-
-  // Fetch accounts with automatic token refresh if needed
   try {
     const deviceToken = await keytar.getPassword(SERVICE_NAME, DEVICE_TOKEN_KEY);
     if (deviceToken) {
-      // Use the enhanced version that handles invalid tokens
       await fetchAndUpdateAccountsFromFlaskEnhanced(deviceToken);
     }
   } catch (err) {
     logger.error("Error fetching accounts on startup", err);
-    // If it's a token issue and we have a window, show a message
-    if (mainWindow && !mainWindow.isDestroyed() && err.message.includes('token')) {
-      mainWindow.webContents.send('device-token-expired');
-    }
   }
+
+  // ADD THIS: Force refresh accounts after everything is ready
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      logger.info('Triggering account refresh after initialization');
+      mainWindow.webContents.executeJavaScript(`
+        // This is exactly what happens when you click Switch Account
+        showView('login');
+      `);
+    }
+  }, 1000); // Give everything time to load
 });
+
+
+
 
 
 
@@ -621,27 +630,34 @@ async function fetchAndUpdateAccountsFromFlaskEnhanced(deviceToken) {
   const steamAccounts = resp.data.steam_accounts || [];
   logger.info(`Flask returned ${steamAccounts.length} steam accounts.`);
 
-  // Rest of the function remains the same...
+  // CRITICAL: Load existing accounts FIRST
   const existingAccounts = await loadAccountsJSON();
+  
+  // CRITICAL: Preserve existing accounts with spread operator
   const updatedAccounts = [...existingAccounts];
 
+  // Update or add accounts from Flask
   for (const flaskAccount of steamAccounts) {
     const steamId = flaskAccount.steam_id;
     const displayName = flaskAccount.persona_name || steamId;
     const avatarUrl = flaskAccount.avatar_url || "static/images/default-avatar.png";
 
+    // Find if account already exists
     const existingIdx = existingAccounts.findIndex(a => a.steamId === steamId);
 
     if (existingIdx >= 0) {
+      // IMPORTANT: Only update metadata, NOT the refresh token
       updatedAccounts[existingIdx].displayName = displayName;
       updatedAccounts[existingIdx].avatarUrl = avatarUrl;
       updatedAccounts[existingIdx].isRegistered = true;
+      // DO NOT touch refreshToken here!
     } else {
+      // Add new account (without token)
       updatedAccounts.push({
         steamId,
         displayName,
         avatarUrl,
-        refreshToken: "",
+        refreshToken: "",  // Flask doesn't provide tokens
         isRegistered: true,
         lastUsed: Date.now(),
       });
@@ -649,6 +665,12 @@ async function fetchAndUpdateAccountsFromFlaskEnhanced(deviceToken) {
   }
 
   await saveAccountsJSON(updatedAccounts);
+  
+  // Optional: Notify renderer to refresh
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('accounts-updated');
+  }
+  
   return updatedAccounts;
 }
 

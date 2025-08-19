@@ -73,7 +73,7 @@ class ItemEnricher {
 
     // Download items_game.txt
     this.logger.info('Downloading items_game.txt...');
-    const itemsGameUrl = 'https://files.skinledger.com/counterstrike/items_game.txt';
+    const itemsGameUrl = 'https://cswhale-green-dust-4483.fly.dev/counterstrike/items_game.txt';
     const itemsResponse = await axios.get(itemsGameUrl, { 
       timeout: 60000, // 60 seconds
       maxContentLength: 100 * 1024 * 1024 // 100MB max
@@ -89,7 +89,7 @@ class ItemEnricher {
     
     // Download translations
     this.logger.info('Downloading translations...');
-    const translationsUrl = 'https://files.skinledger.com/counterstrike/csgo_english.txt';
+    const translationsUrl = 'https://cswhale-green-dust-4483.fly.dev/counterstrike/csgo_english.txt';
     const transResponse = await axios.get(translationsUrl, { timeout: 30000 });
     
     this.logger.info(`Downloaded translations: ${transResponse.data.length} bytes`);
@@ -110,34 +110,39 @@ class ItemEnricher {
 }
 
   processItemsGame(data) {
-    const result = {
-      items: {},
-      paint_kits: {},
-      sticker_kits: {},
-      music_kits: {},
-      prefabs: {}
-    };
+  const result = {
+    items: {},
+    paint_kits: {},
+    sticker_kits: {},
+    music_kits: {},
+    prefabs: {},
+    graffiti_tints: {}  // Added this
+  };
 
-    if (data.items_game) {
-      if (data.items_game.items) {
-        result.items = data.items_game.items;
-      }
-      if (data.items_game.paint_kits) {
-        result.paint_kits = data.items_game.paint_kits;
-      }
-      if (data.items_game.sticker_kits) {
-        result.sticker_kits = data.items_game.sticker_kits;
-      }
-      if (data.items_game.music_definitions) {
-        result.music_kits = data.items_game.music_definitions;
-      }
-      if (data.items_game.prefabs) {
-        result.prefabs = data.items_game.prefabs;
-      }
+  if (data.items_game) {
+    if (data.items_game.items) {
+      result.items = data.items_game.items;
     }
-
-    return result;
+    if (data.items_game.paint_kits) {
+      result.paint_kits = data.items_game.paint_kits;
+    }
+    if (data.items_game.sticker_kits) {
+      result.sticker_kits = data.items_game.sticker_kits;
+    }
+    if (data.items_game.music_definitions) {
+      result.music_kits = data.items_game.music_definitions;
+    }
+    if (data.items_game.prefabs) {
+      result.prefabs = data.items_game.prefabs;
+    }
+    // Add graffiti_tints extraction
+    if (data.items_game.graffiti_tints) {
+      result.graffiti_tints = data.items_game.graffiti_tints;
+    }
   }
+
+  return result;
+}
 
   processTranslations(data) {
     const result = {};
@@ -258,6 +263,71 @@ async enrichItem(rawItem) {
 }
 
 
+
+getGraffitiTintName(tintId) {
+  // First try dynamic data from items_game
+  if (this.itemsGame.graffiti_tints) {
+    for (const [key, value] of Object.entries(this.itemsGame.graffiti_tints)) {
+      if (value.id == tintId) {
+        // Convert key format (e.g., "blood_red" to "Blood Red")
+        // Special case for SWAT which should stay uppercase
+        if (key.toLowerCase() === 'swat_blue') {
+          return 'SWAT Blue';
+        }
+        return key.split('_').map(word => 
+          word.charAt(0).toUpperCase() + word.slice(1)
+        ).join(' ');
+      }
+    }
+  }
+  
+  // Fallback to hardcoded map if dynamic data not available
+  const tintMap = {
+    0: 'Bazooka Pink',
+    1: 'Blood Red', 
+    2: 'Brick Red',
+    3: 'Cash Green',
+    4: 'Desert Amber',
+    5: 'Dust Brown',
+    6: 'Frog Green',
+    7: 'Jungle Green',
+    8: 'Monarch Blue',
+    9: 'Monster Purple',
+    10: 'Princess Pink',
+    11: 'SWAT Blue',
+    12: 'Shark White',
+    13: 'Tiger Orange',
+    14: 'Tracer Yellow',
+    15: 'Violent Violet',
+    16: 'War Pig Pink',
+    17: 'Wire Blue',
+  };
+  
+  return tintMap[tintId] || '';
+}
+
+
+
+
+getAttributeValueBytes(item, defIndex) {
+  if (!item.attribute) return null;
+  const attr = item.attribute.find(a => a.def_index === defIndex);
+  if (!attr || !attr.value_bytes) return null;
+  
+  // Handle different formats of value_bytes
+  if (typeof attr.value_bytes === 'string') {
+    // If it's a hex string, convert to buffer
+    return Buffer.from(attr.value_bytes, 'hex');
+  } else if (Buffer.isBuffer(attr.value_bytes)) {
+    return attr.value_bytes;
+  } else if (attr.value_bytes.data && Array.isArray(attr.value_bytes.data)) {
+    // If it's a buffer-like object with data array
+    return Buffer.from(attr.value_bytes.data);
+  }
+  return null;
+}
+
+
 buildItemName(item) {
   const defIndex = item.def_index || item.defindex;
   const itemDef = this.itemsGame.items?.[defIndex];
@@ -268,21 +338,36 @@ buildItemName(item) {
     const stickerKit = this.itemsGame.sticker_kits?.[stickerId];
     if (stickerKit && stickerKit.item_name) {
       const stickerName = this.translate(stickerKit.item_name);
-      // ✅ Add the "Sticker | " prefix to match Steam's market format
       return stickerName ? `Sticker | ${stickerName}` : `Sticker #${stickerId}`;
     }
-    return `Sticker #${stickerId}`; // Fallback if no kit found
+    return `Sticker #${stickerId}`;
   }
   
-  // Special handling for sealed graffiti (def_index 1348)
+  // Special handling for sealed graffiti (def_index 1348) WITH COLOR
   if (defIndex === 1348 && item.stickers && item.stickers[0]) {
     const stickerId = item.stickers[0].sticker_id;
     const stickerKit = this.itemsGame.sticker_kits?.[stickerId];
+    
     if (stickerKit && stickerKit.item_name) {
       const graffitiName = this.translate(stickerKit.item_name);
-      return `Sealed Graffiti | ${graffitiName}`;
+      
+      // Get graffiti tint from attribute 233
+      let tintName = '';
+      const tintBytes = this.getAttributeValueBytes(item, 233);
+      
+      if (tintBytes && tintBytes.length >= 4) {
+        const tintId = tintBytes.readUInt32LE(0);
+        tintName = this.getGraffitiTintName(tintId);
+      }
+      
+      // Build the final name with color if present
+      if (tintName) {
+        return `Sealed Graffiti | ${graffitiName} (${tintName})`;
+      } else {
+        return `Sealed Graffiti | ${graffitiName}`;
+      }
     }
-    return `Sealed Graffiti #${stickerId}`; // Fallback
+    return `Sealed Graffiti #${stickerId}`;
   }
   
   // Special handling for music kits
@@ -332,9 +417,22 @@ buildItemName(item) {
     baseName = `Souvenir ${baseName}`;
   }
 
+  // Add wear condition for weapons with skins
+  // Only add wear if it's a weapon with a skin (has paint_index and paint_wear)
+  if (item.paint_index && item.paint_wear !== undefined && item.paint_wear !== null) {
+    const wearName = this.getWearName(item.paint_wear);
+    if (wearName) {
+      baseName = `${baseName} (${wearName})`;
+    }
+  }
+
+  // Add ★ prefix for special quality items (knives, gloves, etc.)
+  if (item.quality === 3) {
+    baseName = '★ ' + baseName;
+  }
+
   return baseName;
 }
-
 
 
   buildImageUrl(item) {
