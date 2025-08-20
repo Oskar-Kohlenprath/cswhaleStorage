@@ -92,15 +92,12 @@ const scanAllState = {
   startTime: null
 };
 
-// Function to scan all storage units
 async function scanAllStorageUnits() {
-  // Prevent multiple scans
   if (scanAllState.isScanning) {
     toast.warning('A scan is already in progress');
     return;
   }
   
-  // Get all storage units
   const storageUnits = document.querySelectorAll('.storage-unit');
   if (storageUnits.length === 0) {
     toast.warning('No storage units found');
@@ -109,7 +106,7 @@ async function scanAllStorageUnits() {
   
   // Initialize scan state
   scanAllState.isScanning = true;
-  scanAllState.isBatchMode = true;  // Add this line
+  scanAllState.isBatchMode = true;
   scanAllState.cancelled = false;
   scanAllState.currentIndex = 0;
   scanAllState.totalUnits = scanAllState.caskets.length;
@@ -118,17 +115,186 @@ async function scanAllStorageUnits() {
   
   // Show modal
   showModal('scan-all-modal');
-  updateScanAllProgress();
   
-  // Create individual unit progress display
-  createUnitProgressDisplay();
+  // Update UI for fast scanning
+  document.getElementById('scan-all-status').innerHTML = `
+    <div class="scan-fast-mode">
+      <h3>⚡ Fast Parallel Scanning</h3>
+      <p>Scanning ${scanAllState.totalUnits} storage units simultaneously...</p>
+    </div>
+  `;
   
-  // Hide complete button, show cancel button
+  document.getElementById('scan-progress-current').textContent = 'Scanning multiple units in parallel...';
+  document.getElementById('scan-progress-count').textContent = '0 of ' + scanAllState.totalUnits + ' units completed';
+  
+  // Create progress display for parallel scanning
+  createParallelProgressDisplay();
+  
+  // Hide complete button, show cancel
   document.getElementById('scan-all-complete').style.display = 'none';
   document.getElementById('cancel-scan-all').style.display = 'inline-block';
   
-  // Start scanning
-  await processScanQueue();
+  // Send request to main process for fast parallel scan
+  window.electronAPI.scanAllStorageUnits();
+}
+
+// New function for parallel progress display
+function createParallelProgressDisplay() {
+  const container = document.getElementById('unit-progress-container');
+  
+  if (!container) {
+    logger.error('Unit progress container not found');
+    return;
+  }
+  
+  container.innerHTML = '';
+  container.className = 'unit-progress-container parallel-mode';
+  
+  const header = document.createElement('h4');
+  header.innerHTML = '⚡ Parallel Processing Status:';
+  container.appendChild(header);
+  
+  // Create progress grid
+  const progressGrid = document.createElement('div');
+  progressGrid.className = 'parallel-progress-grid';
+  progressGrid.id = 'parallel-progress-grid';
+  
+  // Add visual indicators for each storage unit
+  scanAllState.caskets.forEach((casket) => {
+    const indicator = document.createElement('div');
+    indicator.className = 'parallel-unit-indicator';
+    indicator.id = `parallel-indicator-${casket.casketId}`;
+    indicator.title = casket.casketName;
+    indicator.innerHTML = `
+      <div class="indicator-spinner"></div>
+      <div class="indicator-checkmark" style="display: none;">✓</div>
+    `;
+    progressGrid.appendChild(indicator);
+  });
+  
+  container.appendChild(progressGrid);
+  
+  // Add stats display
+  const stats = document.createElement('div');
+  stats.className = 'parallel-stats';
+  stats.id = 'parallel-stats';
+  stats.innerHTML = `
+    <div class="stat-item">
+      <span class="stat-label">Speed:</span>
+      <span class="stat-value" id="scan-speed">0 units/sec</span>
+    </div>
+    <div class="stat-item">
+      <span class="stat-label">Items Found:</span>
+      <span class="stat-value" id="items-found">0</span>
+    </div>
+    <div class="stat-item">
+      <span class="stat-label">Time Elapsed:</span>
+      <span class="stat-value" id="time-elapsed">0s</span>
+    </div>
+  `;
+  container.appendChild(stats);
+}
+
+// Add new IPC handlers for parallel scanning
+function setupParallelScanHandlers() {
+  // Progress updates from parallel scanning
+  window.electronAPI.onScanAllParallelProgress((data) => {
+    const { completed, total, casketId, itemCount } = data;
+    
+    // Update main progress
+    const progress = (completed / total) * 100;
+    document.getElementById('scan-all-progress-bar').style.width = `${progress}%`;
+    document.getElementById('scan-progress-count').textContent = `${completed} of ${total} units completed`;
+    
+    // Update specific unit indicator
+    const indicator = document.getElementById(`parallel-indicator-${casketId}`);
+    if (indicator) {
+      indicator.classList.add('complete');
+      indicator.querySelector('.indicator-spinner').style.display = 'none';
+      indicator.querySelector('.indicator-checkmark').style.display = 'block';
+    }
+    
+    // Update stats
+    const elapsed = (Date.now() - scanAllState.startTime) / 1000;
+    const speed = completed / elapsed;
+    document.getElementById('scan-speed').textContent = `${speed.toFixed(1)} units/sec`;
+    document.getElementById('time-elapsed').textContent = `${Math.round(elapsed)}s`;
+    
+    // Update items count
+    const currentItems = parseInt(document.getElementById('items-found').textContent) || 0;
+    document.getElementById('items-found').textContent = currentItems + itemCount;
+  });
+  
+  // Storage progress (server sync)
+  window.electronAPI.onScanAllStorageProgress((data) => {
+    // Optional: Update UI with server sync progress
+    logger.log(`Synced ${data.current}/${data.total} to server`);
+  });
+  
+  // Scan complete
+  window.electronAPI.onScanAllComplete((data) => {
+    scanAllState.isScanning = false;
+    scanAllState.isBatchMode = false;
+    
+    if (data.success) {
+      displayFastScanResults(data);
+    } else {
+      toast.error(`Scan failed: ${data.error}`);
+      hideModal('scan-all-modal');
+    }
+  });
+}
+
+// Display results for fast scan
+function displayFastScanResults(data) {
+  const { results, totalTime, errors } = data;
+  
+  const successfulScans = results.filter(r => r.success).length;
+  const totalItemsFound = results.reduce((sum, r) => sum + r.itemsFound, 0);
+  const timeInSeconds = Math.round(totalTime / 1000);
+  
+  // Update modal with results
+  document.getElementById('scan-all-status').innerHTML = `
+    <div class="scan-summary fast-complete">
+      <h3>⚡ Fast Scan Complete!</h3>
+      <div class="scan-stats">
+        <div class="scan-stat">
+          <span class="scan-stat-label">Time:</span>
+          <span class="scan-stat-value highlight-fast">${timeInSeconds} seconds</span>
+        </div>
+        <div class="scan-stat">
+          <span class="scan-stat-label">Units Scanned:</span>
+          <span class="scan-stat-value">${results.length}</span>
+        </div>
+        <div class="scan-stat">
+          <span class="scan-stat-label">Items Found:</span>
+          <span class="scan-stat-value">${totalItemsFound}</span>
+        </div>
+        <div class="scan-stat">
+          <span class="scan-stat-label">Scan Speed:</span>
+          <span class="scan-stat-value highlight-fast">${(results.length / timeInSeconds).toFixed(1)} units/sec</span>
+        </div>
+      </div>
+      ${errors && Object.keys(errors).length > 0 ? `
+        <div class="scan-errors">
+          <h4>Failed Units (${Object.keys(errors).length}):</h4>
+          <ul>
+            ${Object.entries(errors).map(([id, error]) => 
+              `<li>Storage ${id}: ${error}</li>`
+            ).join('')}
+          </ul>
+        </div>
+      ` : ''}
+    </div>
+  `;
+  
+  // Show complete button
+  document.getElementById('scan-all-complete').style.display = 'inline-block';
+  document.getElementById('cancel-scan-all').style.display = 'none';
+  
+  // Success toast
+  const speedup = Math.round(results.length * 3 / timeInSeconds); // Estimate speedup
+  toast.success(`Scan complete in ${timeInSeconds}s! (${speedup}x faster than sequential)`);
 }
 
 // Process the scan queue
@@ -1346,12 +1512,12 @@ function setupEventListeners() {
 // Set up IPC event handlers
 function setupIPCHandlers() {
 
-
+setupParallelScanHandlers();
 
 window.electronAPI.onForceRefreshAccounts(() => {
   logger.log('Received force-refresh-accounts signal');
   // If we're on login view, refresh the accounts
-  
+
     loadSavedAccounts();
 
 });

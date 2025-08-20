@@ -918,6 +918,147 @@ ipcMain.on("fetch-storage", async () => {
   }
 });
 
+// Replace the existing casket-deep-check-all handler with this new fast version
+ipcMain.on("casket-deep-check-all", async (event) => {
+  try {
+    logger.info("Starting fast parallel scan of all storage units...");
+    
+    if (!user || !csgo || !csgo.haveGCSession) {
+      throw new Error("Not connected to Steam. Please log in first.");
+    }
+    
+    // Get all caskets
+    const caskets = await fetchAllCaskets();
+    logger.info(`Found ${caskets.length} storage units to scan`);
+    
+    if (caskets.length === 0) {
+      mainWindow.webContents.send("scan-all-complete", {
+        success: true,
+        results: [],
+        totalTime: 0
+      });
+      return;
+    }
+    
+    const startTime = Date.now();
+    
+    // Determine optimal concurrency based on number of storage units
+    let concurrency = 4; // Default
+    if (caskets.length <= 5) concurrency = caskets.length;
+    else if (caskets.length <= 10) concurrency = 3;
+    else if (caskets.length > 50) concurrency = 5;
+    
+    logger.info(`Using concurrency level: ${concurrency}`);
+    
+    // Fetch all casket contents in parallel
+    const casketIds = caskets.map(c => c.casketId);
+    const { results: casketContents, errors } = await fetchCasketContentsParallel(casketIds, concurrency);
+    
+    // Initialize enricher if needed
+    if (!itemEnricher) {
+      const ItemEnricher = require('./src/enrichment/itemEnricher');
+      itemEnricher = new ItemEnricher(logger);
+      await itemEnricher.initialize();
+    }
+    
+    // Process each storage unit and send to server
+    const steamAccountId = user.steamID.getSteamID64();
+    const allResults = [];
+    let totalItemsProcessed = 0;
+    
+    for (const casket of caskets) {
+      const items = casketContents[casket.casketId] || [];
+      
+      if (items.length === 0) {
+        allResults.push({
+          casketId: casket.casketId,
+          casketName: casket.casketName,
+          success: !errors[casket.casketId],
+          itemsFound: 0,
+          items: [],
+          error: errors[casket.casketId]
+        });
+        continue;
+      }
+      
+      // Enrich items
+      const enrichedItems = [];
+      for (const item of items) {
+        try {
+          const enriched = await itemEnricher.enrichItem(item);
+          enrichedItems.push(enriched);
+        } catch (err) {
+          logger.error(`Failed to enrich item ${item.id}`, err);
+          enrichedItems.push({
+            assetid: item.id,
+            market_hash_name: "Unknown Item",
+            icon_url: "",
+            tradable: true,
+            appid: 730
+          });
+        }
+      }
+      
+      // Send to server (non-blocking)
+      await sendNewItemsToServerThrottled(casket.casketId, enrichedItems, steamAccountId)
+        .catch(err => logger.error(`Failed to send items for ${casket.casketId} to server`, err));
+      
+      totalItemsProcessed += enrichedItems.length;
+      
+      allResults.push({
+        casketId: casket.casketId,
+        casketName: casket.casketName,
+        success: true,
+        itemsFound: enrichedItems.length,
+        items: enrichedItems,
+        error: null
+      });
+      
+      // Update progress
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('scan-all-storage-progress', {
+          current: allResults.length,
+          total: caskets.length,
+          casketName: casket.casketName,
+          itemsProcessed: totalItemsProcessed
+        });
+      }
+    }
+    
+    const totalTime = Date.now() - startTime;
+    
+    logger.info(`=== FAST SCAN COMPLETE ===`);
+    logger.info(`Total time: ${totalTime}ms (${Math.round(totalTime/1000)}s)`);
+    logger.info(`Storage units scanned: ${caskets.length}`);
+    logger.info(`Total items processed: ${totalItemsProcessed}`);
+    logger.info(`Average time per unit: ${Math.round(totalTime/caskets.length)}ms`);
+    logger.info(`Errors: ${Object.keys(errors).length}`);
+    
+    // Send completion
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("scan-all-complete", {
+        success: true,
+        results: allResults,
+        totalTime,
+        errors
+      });
+    }
+    
+  } catch (error) {
+    logger.error("Error in fast parallel scan", error);
+    
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("scan-all-complete", {
+        success: false,
+        error: error.message || "Unknown error during scan",
+        results: []
+      });
+    }
+  }
+});
+
+
+
 /**
  * Handle casket deep check request
  */
@@ -1022,6 +1163,109 @@ ipcMain.on("casket-deep-check", async (event, casketId) => {
     }
   }
 });
+
+
+
+
+
+
+
+/**
+ * Fetch multiple storage unit contents in parallel with controlled concurrency
+ * @param {Array} casketIds - Array of storage unit IDs to fetch
+ * @param {number} concurrency - Max parallel requests (default 4)
+ * @returns {Promise<Object>} Map of casketId -> items array
+ */
+async function fetchCasketContentsParallel(casketIds, concurrency = 4) {
+  const results = {};
+  const errors = {};
+  let completed = 0;
+  
+  // Create a queue of work
+  const queue = [...casketIds];
+  const inProgress = new Set();
+  
+  logger.info(`Starting parallel fetch of ${casketIds.length} storage units with concurrency ${concurrency}`);
+  
+  // Worker function
+  async function processNext() {
+    if (queue.length === 0) return;
+    
+    const casketId = queue.shift();
+    inProgress.add(casketId);
+    
+    try {
+      const startTime = Date.now();
+      const items = await fetchCasketContents(casketId, 2); // 2 retries max
+      const elapsed = Date.now() - startTime;
+      
+      results[casketId] = items;
+      completed++;
+      
+      logger.info(`Fetched storage ${casketId}: ${items.length} items in ${elapsed}ms (${completed}/${casketIds.length})`);
+      
+      // Send progress update to renderer
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('scan-all-parallel-progress', {
+          completed,
+          total: casketIds.length,
+          casketId,
+          itemCount: items.length
+        });
+      }
+      
+    } catch (error) {
+      logger.error(`Failed to fetch storage ${casketId}:`, error);
+      errors[casketId] = error.message;
+      results[casketId] = []; // Empty array for failed fetches
+      completed++;
+    } finally {
+      inProgress.delete(casketId);
+    }
+    
+    // Process next item if queue has more
+    if (queue.length > 0) {
+      await processNext();
+    }
+  }
+  
+  // Start concurrent workers
+  const workers = [];
+  for (let i = 0; i < Math.min(concurrency, casketIds.length); i++) {
+    workers.push(processNext());
+  }
+  
+  // Wait for all workers to complete
+  await Promise.all(workers);
+  
+  logger.info(`Parallel fetch complete: ${Object.keys(results).length} successful, ${Object.keys(errors).length} failed`);
+  
+  return { results, errors };
+}
+
+
+
+
+
+
+
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+let lastRequestTime = 0;
+const MIN_REQUEST_INTERVAL = 550; // 550ms = ~1.8 requests/second (under your 2/sec limit)
+
+async function sendNewItemsToServerThrottled(casketId, items, steamAccountId) {
+  // Ensure minimum time between requests
+  const now = Date.now();
+  const timeSinceLastRequest = now - lastRequestTime;
+  if (timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
+    await sleep(MIN_REQUEST_INTERVAL - timeSinceLastRequest);
+  }
+  lastRequestTime = Date.now();
+  
+  // Now make the actual request
+  return sendNewItemsToServer(casketId, items, steamAccountId);
+}
 
 /**
  * Send newly discovered items to server

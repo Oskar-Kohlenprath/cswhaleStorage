@@ -29,7 +29,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onForceRefreshAccounts: (callback) => ipcRenderer.on('force-refresh-accounts', callback),
 
 
-  
+  scanAllStorageUnits: () => ipcRenderer.send('casket-deep-check-all'),
+  onScanAllParallelProgress: (callback) => ipcRenderer.on('scan-all-parallel-progress', (event, data) => callback(data)),
+  onScanAllStorageProgress: (callback) => ipcRenderer.on('scan-all-storage-progress', (event, data) => callback(data)),
+  onScanAllComplete: (callback) => ipcRenderer.on('scan-all-complete', (event, data) => callback(data)),
   // Log in with a stored refresh token
   loginWithSavedAccount: (steamId) => ipcRenderer.invoke('login-with-refresh-token', steamId),
   

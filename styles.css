@@ -1420,7 +1420,106 @@ p {
   background: var(--neutral-900);
   margin-right: var(--space-2); /* Distance from outer scroll */
 }
+/* Add to styles.css */
 
+/* Fast Parallel Scan Styles */
+.parallel-mode {
+  background: linear-gradient(135deg, var(--neutral-800), var(--neutral-900));
+  border: 1px solid var(--primary-500);
+}
+
+.scan-fast-mode h3 {
+  color: var(--primary-400);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.parallel-progress-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(30px, 1fr));
+  gap: 4px;
+  margin: var(--space-4) 0;
+  padding: var(--space-3);
+  background: var(--neutral-900);
+  border-radius: var(--radius-sm);
+}
+
+.parallel-unit-indicator {
+  width: 30px;
+  height: 30px;
+  border: 2px solid var(--neutral-700);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+  cursor: help;
+}
+
+.parallel-unit-indicator.complete {
+  background: var(--success);
+  border-color: var(--success);
+  animation: completeFlash 0.3s ease;
+}
+
+@keyframes completeFlash {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}
+
+.indicator-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--primary-500);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.indicator-checkmark {
+  color: white;
+  font-weight: bold;
+}
+
+.parallel-stats {
+  display: flex;
+  justify-content: space-around;
+  padding: var(--space-3);
+  background: var(--neutral-900);
+  border-radius: var(--radius-sm);
+  margin-top: var(--space-3);
+}
+
+.stat-item {
+  text-align: center;
+}
+
+.stat-label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stat-value {
+  display: block;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.highlight-fast {
+  color: var(--primary-400);
+  text-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
+}
+
+.fast-complete .scan-stats {
+  border: 2px solid var(--primary-500);
+  background: rgba(59, 130, 246, 0.1);
+}
 
 .scan-result-item.compact {
   padding: var(--space-2);
