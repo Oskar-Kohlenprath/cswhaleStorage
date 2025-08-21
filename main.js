@@ -1459,6 +1459,14 @@ async function initCSGO(credentials) {
             await removeTokenFromOtherAccounts(finalToken, steamId);
           }
 
+
+
+          try {
+            await checkInventoryNeeds(steamId);
+          } catch (err) {
+            logger.error(`Inventory-needs check failed`, err);
+          }
+
           if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('account-details', {
               steamId,
@@ -1468,11 +1476,7 @@ async function initCSGO(credentials) {
           }
 
           // Ask Flask what we still need in live inventory
-          try {
-            await checkInventoryNeeds(steamId);
-          } catch (err) {
-            logger.error(`Inventory-needs check failed`, err);
-          }
+
         } else {
           // Not a registered account
           logger.warn(`Account ${steamId} not found in Flask accounts list`);

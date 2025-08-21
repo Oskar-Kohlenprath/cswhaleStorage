@@ -117,15 +117,18 @@ async function scanAllStorageUnits() {
   showModal('scan-all-modal');
   
   // Update UI for fast scanning
-    document.getElementById('scan-all-status').innerHTML = `
+  document.getElementById('scan-all-status').innerHTML = `
     <div class="scan-fast-mode">
-      <h3>Scanning Storage Units...</h3>
-      <p>Processing ${scanAllState.totalUnits} units</p>
+      <h3>⚡ Scanning All Storage Units...</h3>
+      <p>Processing ${scanAllState.totalUnits} units in parallel</p>
     </div>
   `;
-  
-  document.getElementById('scan-progress-current').textContent = 'Scanning';
-  
+
+  // Hide the old progress info section entirely
+  const progressInfo = document.querySelector('.scan-progress-info');
+  if (progressInfo) {
+    progressInfo.style.display = 'none';
+  }
   
   // Create progress display for parallel scanning
   createParallelProgressDisplay();
@@ -245,6 +248,12 @@ function setupParallelScanHandlers() {
 
 // Display results for fast scan
 function displayFastScanResults(data) {
+  // Make sure progress info stays hidden
+  const progressInfo = document.querySelector('.scan-progress-info');
+  if (progressInfo) {
+    progressInfo.style.display = 'none';
+  }
+  
   const { results, totalTime, errors } = data;
   
   const successfulScans = results.filter(r => r.success).length;
@@ -1545,14 +1554,26 @@ window.electronAPI.onForceRefreshAccounts(() => {
 
 // ADD THIS inside setupIPCHandlers function:
 // Auto-trigger scan when no inventory needs
-window.electronAPI.onSetAutoScanPending = (callback) => 
-  ipcRenderer.on('set-auto-scan-pending', callback);
-
+// Auto-trigger scan when no inventory needs
+// Auto-trigger scan when no inventory needs
 window.electronAPI.onSetAutoScanPending(() => {
-  logger.log('Auto-scan pending, waiting for storage units to load...');
+  logger.log('Auto-scan pending flag received');
   appState.autoScanPending = true;
+  
+  // Check if storage units are already loaded
+  const storageUnits = document.querySelectorAll('.storage-unit');
+  if (storageUnits.length > 0 && scanAllState.caskets.length > 0) {
+    logger.log('Storage units already loaded, triggering auto-scan immediately...');
+    appState.autoScanPending = false;
+    
+    // Small delay to ensure UI is ready
+    setTimeout(() => {
+      scanAllStorageUnits();
+    }, 500);
+  } else {
+    logger.log('Waiting for storage units to load...');
+  }
 });
-
 
 window.electronAPI.onPleaseEnterEmail(() => {
   hideLoading();
@@ -1597,7 +1618,8 @@ window.electronAPI.onPleaseEnterEmail(() => {
   });
   
   // Storage items
-  window.electronAPI.onStorageItems((_, caskets) => {
+// Storage items
+window.electronAPI.onStorageItems((_, caskets) => {
   renderStorageUnits(caskets);
   
   // Check if auto-scan was pending
