@@ -60,7 +60,7 @@
     "preload.js",
     "styles.css",
     "index.html",
-    "src/**/*",          // Add this line
+    "src/**/*",          
     "static/**/*",
     "node_modules/**/*",
     "!node_modules/.cache",
