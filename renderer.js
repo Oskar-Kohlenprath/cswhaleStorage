@@ -117,15 +117,15 @@ async function scanAllStorageUnits() {
   showModal('scan-all-modal');
   
   // Update UI for fast scanning
-  document.getElementById('scan-all-status').innerHTML = `
+    document.getElementById('scan-all-status').innerHTML = `
     <div class="scan-fast-mode">
-      <h3>⚡ Fast Parallel Scanning</h3>
-      <p>Scanning ${scanAllState.totalUnits} storage units simultaneously...</p>
+      <h3>Scanning Storage Units...</h3>
+      <p>Processing ${scanAllState.totalUnits} units</p>
     </div>
   `;
   
-  document.getElementById('scan-progress-current').textContent = 'Scanning multiple units in parallel...';
-  document.getElementById('scan-progress-count').textContent = '0 of ' + scanAllState.totalUnits + ' units completed';
+  document.getElementById('scan-progress-current').textContent = 'Scanning';
+  
   
   // Create progress display for parallel scanning
   createParallelProgressDisplay();
@@ -139,6 +139,7 @@ async function scanAllStorageUnits() {
 }
 
 // New function for parallel progress display
+// REPLACE the entire createParallelProgressDisplay function with:
 function createParallelProgressDisplay() {
   const container = document.getElementById('unit-progress-container');
   
@@ -150,11 +151,7 @@ function createParallelProgressDisplay() {
   container.innerHTML = '';
   container.className = 'unit-progress-container parallel-mode';
   
-  const header = document.createElement('h4');
-  header.innerHTML = '⚡ Parallel Processing Status:';
-  container.appendChild(header);
-  
-  // Create progress grid
+  // Create progress grid WITHOUT the header and stats
   const progressGrid = document.createElement('div');
   progressGrid.className = 'parallel-progress-grid';
   progressGrid.id = 'parallel-progress-grid';
@@ -174,26 +171,9 @@ function createParallelProgressDisplay() {
   
   container.appendChild(progressGrid);
   
-  // Add stats display
-  const stats = document.createElement('div');
-  stats.className = 'parallel-stats';
-  stats.id = 'parallel-stats';
-  stats.innerHTML = `
-    <div class="stat-item">
-      <span class="stat-label">Speed:</span>
-      <span class="stat-value" id="scan-speed">0 units/sec</span>
-    </div>
-    <div class="stat-item">
-      <span class="stat-label">Items Found:</span>
-      <span class="stat-value" id="items-found">0</span>
-    </div>
-    <div class="stat-item">
-      <span class="stat-label">Time Elapsed:</span>
-      <span class="stat-value" id="time-elapsed">0s</span>
-    </div>
-  `;
-  container.appendChild(stats);
+  // Remove the stats display entirely - users don't need this
 }
+
 
 // Add new IPC handlers for parallel scanning
 function setupParallelScanHandlers() {
@@ -206,13 +186,7 @@ function setupParallelScanHandlers() {
     document.getElementById('scan-all-progress-bar').style.width = `${progress}%`;
     document.getElementById('scan-progress-count').textContent = `${completed} of ${total} units completed`;
     
-    // Update specific unit indicator
-    const indicator = document.getElementById(`parallel-indicator-${casketId}`);
-    if (indicator) {
-      indicator.classList.add('complete');
-      indicator.querySelector('.indicator-spinner').style.display = 'none';
-      indicator.querySelector('.indicator-checkmark').style.display = 'block';
-    }
+
     
     // Update stats
     const elapsed = (Date.now() - scanAllState.startTime) / 1000;
@@ -223,6 +197,30 @@ function setupParallelScanHandlers() {
     // Update items count
     const currentItems = parseInt(document.getElementById('items-found').textContent) || 0;
     document.getElementById('items-found').textContent = currentItems + itemCount;
+  });
+
+
+    window.electronAPI.onMarkUnitComplete((data) => {
+    const { casketId } = data;
+    const indicator = document.getElementById(`parallel-indicator-${casketId}`);
+    if (indicator) {
+      indicator.classList.add('complete');
+      indicator.querySelector('.indicator-spinner').style.display = 'none';
+      indicator.querySelector('.indicator-checkmark').style.display = 'block';
+    }
+  });
+  
+  // Mark unit as failed
+  window.electronAPI.onMarkUnitFailed((data) => {
+    const { casketId } = data;
+    const indicator = document.getElementById(`parallel-indicator-${casketId}`);
+    if (indicator) {
+      indicator.classList.add('failed');
+      indicator.classList.remove('complete');
+      indicator.querySelector('.indicator-spinner').style.display = 'none';
+      indicator.querySelector('.indicator-checkmark').style.display = 'none';
+      indicator.innerHTML = '<span style="color: red;">✗</span>';
+    }
   });
   
   // Storage progress (server sync)
@@ -256,23 +254,15 @@ function displayFastScanResults(data) {
   // Update modal with results
   document.getElementById('scan-all-status').innerHTML = `
     <div class="scan-summary fast-complete">
-      <h3>⚡ Fast Scan Complete!</h3>
+      <h3>⚡ Go to cswhale.com and list the Items!</h3>
       <div class="scan-stats">
         <div class="scan-stat">
-          <span class="scan-stat-label">Time:</span>
-          <span class="scan-stat-value highlight-fast">${timeInSeconds} seconds</span>
-        </div>
-        <div class="scan-stat">
           <span class="scan-stat-label">Units Scanned:</span>
-          <span class="scan-stat-value">${results.length}</span>
+          <span class="scan-stat-value">${results.length} Items</span>
         </div>
         <div class="scan-stat">
           <span class="scan-stat-label">Items Found:</span>
           <span class="scan-stat-value">${totalItemsFound}</span>
-        </div>
-        <div class="scan-stat">
-          <span class="scan-stat-label">Scan Speed:</span>
-          <span class="scan-stat-value highlight-fast">${(results.length / timeInSeconds).toFixed(1)} units/sec</span>
         </div>
       </div>
       ${errors && Object.keys(errors).length > 0 ? `

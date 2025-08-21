@@ -56,6 +56,9 @@ onSetAutoScanPending: (callback) => ipcRenderer.on('set-auto-scan-pending', call
   sendEmail: (email) => ipcRenderer.send('email-submitted', email),
   cancelEmail: () => ipcRenderer.send('email-cancelled'),
 
+    // ADD these in the electronAPI exposure:
+  onMarkUnitComplete: (callback) => ipcRenderer.on('mark-unit-complete', (event, data) => callback(data)),
+  onMarkUnitFailed: (callback) => ipcRenderer.on('mark-unit-failed', (event, data) => callback(data)),
 
 
   // Auto-updater functions

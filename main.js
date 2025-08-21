@@ -991,8 +991,24 @@ ipcMain.on("casket-deep-check-all", async (event) => {
       }
       
       // Send to server (non-blocking)
-      await sendNewItemsToServerThrottled(casket.casketId, enrichedItems, steamAccountId)
-        .catch(err => logger.error(`Failed to send items for ${casket.casketId} to server`, err));
+      try {
+        await sendNewItemsToServerThrottled(casket.casketId, enrichedItems, steamAccountId);
+        
+        // Only mark as complete after successful server sync
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('mark-unit-complete', {
+            casketId: casket.casketId
+          });
+        }
+      } catch (err) {
+        logger.error(`Failed to send items for ${casket.casketId} to server`, err);
+        // Mark as failed if server sync fails
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('mark-unit-failed', {
+            casketId: casket.casketId
+          });
+        }
+      }
       
       totalItemsProcessed += enrichedItems.length;
       
