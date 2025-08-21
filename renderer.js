@@ -1312,21 +1312,12 @@ async function moveItemsFromStorage() {
     hideLoading();
     
     if (response.success) {
-      // Show the success modal instead of just a toast
+      // Show the success modal
       showModal('move-items-success-modal');
       
-      // Auto-trigger scan after successful move with longer delay
-      logger.log('Items moved successfully, triggering automatic storage scan...');
-      setTimeout(() => {
-        hideModal('move-items-success-modal');
-        
-        // Fetch fresh storage units before scanning
-        logger.log('Refreshing storage units before scan...');
-        window.electronAPI.fetchStorage();
-        
-        // Set flag to scan after storage units load
-        appState.autoScanPending = true;
-      }, 3000); // 3 seconds to see success message
+      // REMOVE the auto-trigger code from here
+      // Don't set autoScanPending here anymore
+      
     } else {
       toast.error(`Failed to move items: ${response.error}`);
       // Show the move items modal again since it's required
@@ -1340,7 +1331,6 @@ async function moveItemsFromStorage() {
     showModal('move-items-modal');
   }
 }
-
 
 // Add this function for email submission
 function submitEmail() {
@@ -1433,55 +1423,71 @@ function setupEventListeners() {
 
 
   // Prevent ESC key from closing critical modals
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      const emailModal = document.getElementById('email-request-modal');
-      const device2faModal = document.getElementById('device-2fa-modal');
-      
-      // Check if email modal is visible
-      if (emailModal && emailModal.style.display === 'flex') {
-        e.preventDefault();
-        toast.warning('Please enter your email address to continue');
+  // Prevent ESC key from closing critical modals
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    // ADD THIS: Check if move items modal is visible
+    const moveItemsModal = document.getElementById('move-items-modal');
+    if (moveItemsModal && moveItemsModal.style.display === 'flex') {
+      e.preventDefault();
+      toast.warning('You must move the required items to continue.');
+      return;
+    }
+    
+    const emailModal = document.getElementById('email-request-modal');
+    const device2faModal = document.getElementById('device-2fa-modal');
+    
+    // Check if email modal is visible
+    if (emailModal && emailModal.style.display === 'flex') {
+      e.preventDefault();
+      toast.warning('Please enter your email address to continue');
+      return;
+    }
+    
+    // Check if 2FA modal is visible
+    if (device2faModal && device2faModal.style.display === 'flex') {
+      e.preventDefault();
+      toast.warning('Please enter the 2FA code to continue');
+      return;
+    }
+  }
+});
+  // Replace the existing modal overlay click handler with this:
+  // Replace the existing modal overlay click handler with this:
+document.querySelectorAll('.modal-overlay').forEach(modal => {
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) {
+      // ADD THIS: Prevent closing move-items-modal by clicking outside
+      if (modal.id === 'move-items-modal') {
+        e.stopPropagation();
+        toast.warning('You must move the required items to continue.');
         return;
       }
       
-      // Check if 2FA modal is visible
-      if (device2faModal && device2faModal.style.display === 'flex') {
-        e.preventDefault();
-        toast.warning('Please enter the 2FA code to continue');
+      // Prevent closing the email-request-modal by clicking outside
+      if (modal.id === 'email-request-modal') {
+        e.stopPropagation();
+        toast.warning('Please enter your email address to continue, or close the application if you wish to cancel.');
         return;
       }
+      
+      // Prevent closing scan-all modal during scanning
+      if (modal.id === 'scan-all-modal' && scanAllState.isScanning) {
+        e.stopPropagation();
+        toast.warning('Please wait for the scan to complete or click Cancel');
+        return;
+      }
+      
+      // Prevent closing device-2fa-modal
+      if (modal.id === 'device-2fa-modal') {
+        // Don't allow clicking away from 2FA modal either
+        return;
+      }
+      
+      hideModal(modal.id);
     }
   });
-  
-  // Replace the existing modal overlay click handler with this:
-  document.querySelectorAll('.modal-overlay').forEach(modal => {
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) {
-        // Prevent closing the email-request-modal by clicking outside
-        if (modal.id === 'email-request-modal') {
-          e.stopPropagation();
-          toast.warning('Please enter your email address to continue, or close the application if you wish to cancel.');
-          return;
-        }
-        
-        // Prevent closing scan-all modal during scanning
-        if (modal.id === 'scan-all-modal' && scanAllState.isScanning) {
-          e.stopPropagation();
-          toast.warning('Please wait for the scan to complete or click Cancel');
-          return;
-        }
-        
-        // Prevent closing device-2fa-modal
-        if (modal.id === 'device-2fa-modal') {
-          // Don't allow clicking away from 2FA modal either
-          return;
-        }
-        
-        hideModal(modal.id);
-      }
-    });
-  });
+});
 
 
   // Steam Guard submit button
@@ -1518,8 +1524,18 @@ function setupEventListeners() {
   document.getElementById('move-items-yes').addEventListener('click', moveItemsFromStorage);
 
 
-  document.getElementById('move-items-success-close').addEventListener('click', () => {
+  // Replace the existing handler with this:
+document.getElementById('move-items-success-close').addEventListener('click', () => {
   hideModal('move-items-success-modal');
+  
+  // NOW trigger the auto-scan after user closes the success modal
+  logger.log('User closed success modal, triggering automatic storage scan...');
+  
+  // Fetch fresh storage units before scanning
+  window.electronAPI.fetchStorage();
+  
+  // Set flag to scan after storage units load
+  appState.autoScanPending = true;
 });
 }
 
