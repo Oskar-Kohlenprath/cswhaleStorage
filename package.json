@@ -54,21 +54,22 @@
     "directories": {
       "output": "dist"
     },
-    "files": [
-      "main.js",
-      "renderer.js",
-      "preload.js",
-      "styles.css",
-      "index.html",
-      "static/**/*",
-      "node_modules/**/*",
-      "!node_modules/.cache",
-      "!dist/**/*",
-      "!.git/**/*",
-      "!.gitignore",
-      "!build-and-upload.js",
-      "!delete-keytar.js"
-    ],
+  "files": [
+    "main.js",
+    "renderer.js",
+    "preload.js",
+    "styles.css",
+    "index.html",
+    "src/**/*",          // Add this line
+    "static/**/*",
+    "node_modules/**/*",
+    "!node_modules/.cache",
+    "!dist/**/*",
+    "!.git/**/*",
+    "!.gitignore",
+    "!build-and-upload.js",
+    "!delete-keytar.js"
+  ],
     "extraResources": [
       {
         "from": "static/",
