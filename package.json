@@ -153,12 +153,12 @@
     "publish": {
       "provider": "github",
       "owner": "Oskar-Kohlenprath",
-      "repo": "cswhaleDesktop",
+      "repo": "cswhaleStorage",
       "releaseType": "release",
       "publishAutoUpdate": true
     },
     "releaseInfo": {
-      "releaseNotes": "Bug fixes and performance improvements"
+      "releaseNotes": "First release"
     }
   }
 }
