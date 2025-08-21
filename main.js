@@ -899,17 +899,8 @@ ipcMain.on("fetch-storage", async () => {
       mainWindow.webContents.send("storage-items", caskets);
     }
     
-    // Get the current Steam account id from the logged-in user
-    const steamAccountId = user.steamID.getSteamID64();
+    // REMOVED: sendStorageUnitsToServer call - not needed since register_storage_items handles it
     
-    // Send the caskets to the Flask endpoint
-    try {
-      const serverResponse = await sendStorageUnitsToServer(caskets, steamAccountId);
-      logger.info(`Storage units sent to server: ${JSON.stringify(serverResponse)}`);
-    } catch (serverErr) {
-      logger.error("Error sending storage units to server", serverErr);
-      // We don't need to notify the user about this server-side issue
-    }
   } catch (error) {
     logger.error("Error fetching storage units", error);
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2026,6 +2017,8 @@ async function promptUserFor2FACodeInRenderer() {
  * @param {string} steamId - Steam ID
  */
 // In main.js
+// REPLACE WITH:
+// REPLACE the checkInventoryNeeds function (around line 2395) with:
 async function checkInventoryNeeds(steamId) {
   const apiCall = async () => {
     logger.info("Fetching inventory-needs from API");
@@ -2065,10 +2058,15 @@ async function checkInventoryNeeds(steamId) {
     });
     
     mainWindow.webContents.send("inventory-needs", data);
+  } else {
+    // No inventory needs, trigger automatic scan AFTER storage units are loaded
+    logger.info('No inventory needs detected, will trigger automatic storage scan after units load...');
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      // Set a flag that will be checked after storage units are loaded
+      mainWindow.webContents.send("set-auto-scan-pending");
+    }
   }
 }
-
-
 
 
 

@@ -24,7 +24,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Get all saved accounts
   getSavedAccounts: () => ipcRenderer.invoke('get-saved-accounts'),
   
-
+// ADD THIS LINE in the electronAPI exposure:
+  // ADD THIS LINE in the electronAPI exposure:
+onSetAutoScanPending: (callback) => ipcRenderer.on('set-auto-scan-pending', callback),
+// REMOVE or comment out: onTriggerAutoScan if you added it before
 
   onForceRefreshAccounts: (callback) => ipcRenderer.on('force-refresh-accounts', callback),
 

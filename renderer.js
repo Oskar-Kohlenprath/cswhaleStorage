@@ -58,9 +58,9 @@ const appState = {
   currentCasketName: '',
   currentCasketIcon: '',
   inventoryNeedsPayload: null,
-  isLoading: false
+  isLoading: false,
+  autoScanPending: false  // ADD THIS LINE
 };
-
 
 
 
@@ -1302,6 +1302,7 @@ function handleInventoryNeeds(data) {
   showModal('move-items-modal');
 }
 
+// MODIFY the moveItemsFromStorage function (around line 1860):
 async function moveItemsFromStorage() {
   try {
     hideModal('move-items-modal');
@@ -1313,6 +1314,19 @@ async function moveItemsFromStorage() {
     if (response.success) {
       // Show the success modal instead of just a toast
       showModal('move-items-success-modal');
+      
+      // Auto-trigger scan after successful move with longer delay
+      logger.log('Items moved successfully, triggering automatic storage scan...');
+      setTimeout(() => {
+        hideModal('move-items-success-modal');
+        
+        // Fetch fresh storage units before scanning
+        logger.log('Refreshing storage units before scan...');
+        window.electronAPI.fetchStorage();
+        
+        // Set flag to scan after storage units load
+        appState.autoScanPending = true;
+      }, 3000); // 3 seconds to see success message
     } else {
       toast.error(`Failed to move items: ${response.error}`);
       // Show the move items modal again since it's required
@@ -1523,7 +1537,15 @@ window.electronAPI.onForceRefreshAccounts(() => {
 });
 
 
+// ADD THIS inside setupIPCHandlers function:
+// Auto-trigger scan when no inventory needs
+window.electronAPI.onSetAutoScanPending = (callback) => 
+  ipcRenderer.on('set-auto-scan-pending', callback);
 
+window.electronAPI.onSetAutoScanPending(() => {
+  logger.log('Auto-scan pending, waiting for storage units to load...');
+  appState.autoScanPending = true;
+});
 
 
 window.electronAPI.onPleaseEnterEmail(() => {
@@ -1570,8 +1592,19 @@ window.electronAPI.onPleaseEnterEmail(() => {
   
   // Storage items
   window.electronAPI.onStorageItems((_, caskets) => {
-    renderStorageUnits(caskets);
-  });
+  renderStorageUnits(caskets);
+  
+  // Check if auto-scan was pending
+  if (appState.autoScanPending && caskets && caskets.length > 0) {
+    appState.autoScanPending = false;
+    logger.log('Storage units loaded, executing pending auto-scan...');
+    
+    // Add delay to ensure UI is fully rendered
+    setTimeout(() => {
+      scanAllStorageUnits();
+    }, 1000); // 1 second delay for UI to settle
+  }
+});
   
   // Deep check progress
   window.electronAPI.onDeepCheckProgress((data) => {
