@@ -32,6 +32,7 @@ const MAX_CASKET_SIZE = 1000;
 const INVENTORY_BUFFER = 50; // Increased buffer for safety
 const SAFE_INVENTORY_SIZE = MAX_INVENTORY_SIZE - INVENTORY_BUFFER;
 const API_BASE_URL = "https://cswhale-green-dust-4483.fly.dev/api";
+const TradeOfferManager = require('steam-tradeoffer-manager');
 
 // Global variables
 let mainWindow;
@@ -41,6 +42,7 @@ let community; // SteamCommunity instance
 let lastReceivedToken = null;
 let logStream; // For file logging
 let deviceTokenRequestInProgress = false;
+let manager; // Add this to your global variables
 
 
 
@@ -545,7 +547,153 @@ app.on('activate', () => {
 
 
 
+// Fetch all trade offers
+ipcMain.handle('fetch-trade-offers', async () => {
+  try {
+    if (!manager) {
+      throw new Error('Trade manager not initialized');
+    }
 
+    return new Promise((resolve, reject) => {
+      manager.getOffers(
+        TradeOfferManager.EOfferFilter.All,
+        (err, sent, received) => {
+          if (err) {
+            logger.error('Error fetching trade offers', err);
+            reject(err);
+            return;
+          }
+
+          try {
+            const offers = {
+              sent: sent.map(offer => formatTradeOffer(offer)),
+              received: received.map(offer => formatTradeOffer(offer))
+            };
+
+            logger.info(`Fetched ${sent.length} sent and ${received.length} received trade offers`);
+            resolve(offers);
+          } catch (formatError) {
+            logger.error('Error formatting trade offers:', formatError);
+            reject(formatError);
+          }
+        }
+      );
+    });
+  } catch (error) {
+    logger.error('Failed to fetch trade offers:', error);
+    logger.error('Error stack:', error.stack);
+    throw error;
+  }
+});
+
+
+
+// Accept a trade offer
+ipcMain.handle('accept-trade-offer', async (event, offerId) => {
+  try {
+    if (!manager) {
+      throw new Error('Trade manager not initialized');
+    }
+
+    return new Promise((resolve, reject) => {
+      manager.getOffer(offerId, (err, offer) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        offer.accept((err, status) => {
+          if (err) {
+            logger.error(`Failed to accept trade offer ${offerId}`, err);
+            reject(err);
+          } else {
+            logger.info(`Trade offer ${offerId} accepted with status: ${status}`);
+            resolve({ success: true, status });
+          }
+        });
+      });
+    });
+  } catch (error) {
+    logger.error('Failed to accept trade offer', error);
+    throw error;
+  }
+});
+
+// Decline a trade offer
+ipcMain.handle('decline-trade-offer', async (event, offerId) => {
+  try {
+    if (!manager) {
+      throw new Error('Trade manager not initialized');
+    }
+
+    return new Promise((resolve, reject) => {
+      manager.getOffer(offerId, (err, offer) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        offer.decline((err) => {
+          if (err) {
+            logger.error(`Failed to decline trade offer ${offerId}`, err);
+            reject(err);
+          } else {
+            logger.info(`Trade offer ${offerId} declined`);
+            resolve({ success: true });
+          }
+        });
+      });
+    });
+  } catch (error) {
+    logger.error('Failed to decline trade offer', error);
+    throw error;
+  }
+});
+
+
+// Listen for new trade offers
+function setupTradeOfferListeners() {
+  if (!manager) return;
+
+  manager.on('newOffer', (offer) => {
+    logger.info(`New trade offer received from ${offer.partner.getSteamID64()}`);
+    
+    // Notify renderer about new offer
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('new-trade-offer', formatTradeOffer(offer));
+    }
+  });
+
+  manager.on('sentOfferChanged', (offer, oldState) => {
+    logger.info(`Sent offer ${offer.id} changed state from ${oldState} to ${offer.state}`);
+    
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('trade-offer-updated', {
+        offer: formatTradeOffer(offer),
+        oldState
+      });
+    }
+  });
+
+  manager.on('receivedOfferChanged', (offer, oldState) => {
+    logger.info(`Received offer ${offer.id} changed state from ${oldState} to ${offer.state}`);
+    
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('trade-offer-updated', {
+        offer: formatTradeOffer(offer),
+        oldState
+      });
+    }
+  });
+
+  manager.on('pollFailure', (err) => {
+    logger.error('Trade offer polling failed', err);
+  });
+
+  manager.on('pollSuccess', () => {
+    logger.info('Trade offer poll successful');
+  });
+}
 
 
 
@@ -1381,6 +1529,52 @@ async function sendStorageUnitsToServer(caskets, steamAccountId) {
 
   return await withDeviceTokenRetry(apiCall);
 }
+
+
+/**
+ * Format trade offer data for renderer
+ * @param {Object} offer - Raw trade offer from manager
+ * @returns {Object} Formatted trade offer
+ */
+function formatTradeOffer(offer) {
+  return {
+    id: offer.id,
+    partner: offer.partner.getSteamID64(),
+    message: offer.message,
+    state: offer.state,
+    stateName: TradeOfferManager.ETradeOfferState[offer.state],
+    itemsToGive: (offer.itemsToGive || []).map(item => ({
+      assetid: item.assetid,
+      appid: item.appid,
+      contextid: item.contextid,
+      amount: item.amount || 1,
+      name: item.name,
+      market_name: item.market_name,
+      market_hash_name: item.market_hash_name,
+      icon_url: item.icon_url,
+      type: item.type
+    })),
+    itemsToReceive: (offer.itemsToReceive || []).map(item => ({
+      assetid: item.assetid,
+      appid: item.appid,
+      contextid: item.contextid,
+      amount: item.amount || 1,
+      name: item.name,
+      market_name: item.market_name,
+      market_hash_name: item.market_hash_name,
+      icon_url: item.icon_url,
+      type: item.type
+    })),
+    isOurOffer: offer.isOurOffer,
+    createdAt: offer.created,
+    updatedAt: offer.updated,
+    expiresAt: offer.expires,
+    tradeID: offer.tradeID,
+    confirmationMethod: offer.confirmationMethod,
+    escrowEnds: offer.escrow_end_date
+  };
+}
+
 /**
  * Initialize CS:GO connection
  * @param {Object} credentials - Login credentials
@@ -1399,6 +1593,16 @@ async function initCSGO(credentials) {
     // Create new user and csgo instances
     user = new SteamUser();
     csgo = new GlobalOffensive(user);
+
+    // Initialize trade manager
+    manager = new TradeOfferManager({
+      steam: user,
+      community: community,
+      language: 'en',
+      pollInterval: 10000, // Check for trade updates every 10 seconds
+      cancelTime: 300000,  // Cancel outgoing offers after 5 minutes
+      pendingCancelTime: 30000 // Cancel offers pending confirmation after 30 seconds
+    });
 
     // Simple token capture without immediate saving
     user.on("refreshToken", (token) => {
@@ -1459,8 +1663,6 @@ async function initCSGO(credentials) {
             await removeTokenFromOtherAccounts(finalToken, steamId);
           }
 
-
-
           try {
             await checkInventoryNeeds(steamId);
           } catch (err) {
@@ -1474,8 +1676,6 @@ async function initCSGO(credentials) {
               avatarUrl: loggedInAccount.avatarUrl || 'static/images/default-avatar.png'
             });
           }
-
-          // Ask Flask what we still need in live inventory
 
         } else {
           // Not a registered account
@@ -1506,6 +1706,12 @@ async function initCSGO(credentials) {
             });
           }
         }
+
+        // Set up trade offer listeners after successful login
+        setTimeout(() => {
+          setupTradeOfferListeners();
+        }, 2000);
+
       } catch (err) {
         logger.error(`Error during account processing`, err);
         
@@ -1520,12 +1726,38 @@ async function initCSGO(credentials) {
           await removeTokenFromOtherAccounts(finalToken, steamId);
         }
       }
+
+      setTimeout(() => {
+        setupTradeOfferListeners();
+      }, 2000);
+
     });
 
-    // Web session handling
+    // Web session handling - CRITICAL: Set cookies for both community and trade manager
     user.on("webSession", (sessionID, cookies) => {
       logger.info(`Obtained web session: ${sessionID}`);
+      
+      // Set cookies for community
       community.setCookies(cookies);
+      
+      // Set cookies for trade manager
+      manager.setCookies(cookies, (err) => {
+        if (err) {
+          logger.error('Failed to set trade manager cookies', err);
+        } else {
+          logger.info('Trade manager cookies set successfully');
+          
+          // Get API key for trade confirmations (optional but recommended)
+          manager.setCookies(cookies, (err) => {
+            if (err) {
+              logger.error('Failed to set trade manager cookies', err);
+            } else {
+              logger.info('Trade manager cookies set successfully');
+              // No need for getAPIKey - the manager handles it internally
+            }
+          });
+        }
+      });
     });
 
     // Steam Guard handling
@@ -1558,6 +1790,16 @@ async function initCSGO(credentials) {
       logger.warn(`Disconnected from GC: ${reason}`);
     });
 
+    // Trade offer manager events
+    manager.on('sessionExpired', (err) => {
+      logger.error('Trade manager session expired', err);
+      // The web session event will fire again and reset cookies
+    });
+
+    manager.on('debug', (message) => {
+      logger.info(`Trade manager debug: ${message}`);
+    });
+
     // Login with credentials
     if (credentials.refreshToken) {
       user.logOn({
@@ -1571,6 +1813,103 @@ async function initCSGO(credentials) {
     }
   });
 }
+
+/**
+ * Set up trade offer event listeners
+ */
+function setupTradeOfferListeners() {
+  if (!manager) {
+    logger.warn('Trade manager not initialized, skipping listener setup');
+    return;
+  }
+
+  logger.info('Setting up trade offer listeners...');
+
+  // New offer received
+  manager.on('newOffer', (offer) => {
+    logger.info(`New trade offer received from ${offer.partner.getSteamID64()}`);
+    
+    // Get more details about the offer
+    offer.getUserDetails((err, me, them) => {
+      if (!err) {
+        logger.info(`Trade offer from ${them.personaName}`);
+      }
+    });
+    
+    // Notify renderer about new offer
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('new-trade-offer', formatTradeOffer(offer));
+    }
+  });
+
+  // Sent offer state changed
+  manager.on('sentOfferChanged', (offer, oldState) => {
+    logger.info(`Sent offer ${offer.id} changed state from ${TradeOfferManager.ETradeOfferState[oldState]} to ${TradeOfferManager.ETradeOfferState[offer.state]}`);
+    
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('trade-offer-updated', {
+        offer: formatTradeOffer(offer),
+        oldState,
+        type: 'sent'
+      });
+    }
+  });
+
+  // Received offer state changed
+  manager.on('receivedOfferChanged', (offer, oldState) => {
+    logger.info(`Received offer ${offer.id} changed state from ${TradeOfferManager.ETradeOfferState[oldState]} to ${TradeOfferManager.ETradeOfferState[offer.state]}`);
+    
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('trade-offer-updated', {
+        offer: formatTradeOffer(offer),
+        oldState,
+        type: 'received'
+      });
+    }
+  });
+
+  // Offer needs confirmation (mobile authenticator)
+  manager.on('sentOfferNeedsConfirmation', (offer) => {
+    logger.info(`Offer ${offer.id} needs mobile confirmation`);
+    
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('offer-needs-confirmation', {
+        offerId: offer.id,
+        partner: offer.partner.getSteamID64()
+      });
+    }
+  });
+
+  // Real-time trade notifications
+  manager.on('sentPendingOfferCanceled', (offer) => {
+    logger.info(`Pending offer ${offer.id} was canceled`);
+  });
+
+  // Poll events
+  manager.on('pollStarted', () => {
+    logger.info('Trade offer poll started');
+  });
+
+  manager.on('pollFailure', (err) => {
+    logger.error('Trade offer polling failed', err);
+    
+    // Attempt to recover
+    if (err.message && err.message.includes('Not Logged In')) {
+      logger.warn('Session expired, web session should refresh automatically');
+    }
+  });
+
+  manager.on('pollSuccess', () => {
+    logger.info('Trade offer poll successful');
+  });
+
+  manager.on('pollData', (pollData) => {
+    logger.info(`Poll data received: ${JSON.stringify(pollData)}`);
+  });
+
+  logger.info('Trade offer listeners setup complete');
+}
+
 
 /**
  * Remove token from other accounts
@@ -1746,18 +2085,26 @@ function extractSteamIdFromToken(token) {
 /**
  * Terminate Steam session
  */
+/**
+ * Terminate Steam session
+ */
 async function terminateSteamSession() {
   if (!user) return;
   
   logger.info('Terminating existing Steam session...');
   
   try {
-    // ✅ Remove all event listeners BEFORE creating new instances
+    // Remove all event listeners
     if (user) {
       user.removeAllListeners();
     }
     if (csgo) {
       csgo.removeAllListeners();
+    }
+    if (manager) {
+      manager.removeAllListeners();
+      manager.shutdown();
+      manager = null;
     }
     
     // Stop playing games
@@ -1774,7 +2121,7 @@ async function terminateSteamSession() {
     csgo = new GlobalOffensive(user);
     
     // Increase max listeners if needed
-    csgo.setMaxListeners(20);  // Increase from default 10
+    csgo.setMaxListeners(20);
     
     lastReceivedToken = null;
     

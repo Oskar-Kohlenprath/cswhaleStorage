@@ -1516,7 +1516,10 @@ document.querySelectorAll('.modal-overlay').forEach(modal => {
   });
   
 
-
+  const viewTradesButton = document.getElementById('view-trades-button');
+  if (viewTradesButton) {
+    viewTradesButton.addEventListener('click', fetchTradeOffers);
+  }
 
 
   // Move items buttons
@@ -1745,6 +1748,244 @@ window.electronAPI.onMoveVerificationFailed((data) => {
 
 }
 
+
+
+
+// Add this function to renderer.js
+async function fetchTradeOffers() {
+  try {
+    showLoading();
+    const offers = await window.electronAPI.fetchTradeOffers();
+    hideLoading();
+    
+    displayTradeOffers(offers);
+  } catch (error) {
+    hideLoading();
+    logger.error('Failed to fetch trade offers', error);
+    toast.error('Failed to fetch trade offers');
+  }
+}
+
+function displayTradeOffers(offers) {
+  // Create a modal or section to display trade offers
+  const tradeOffersHTML = `
+    <div class="trade-offers-container">
+      <h2>Trade Offers</h2>
+      
+      <div class="trade-offers-tabs">
+        <button class="tab-button active" data-tab="received">
+          Received (${offers.received.length})
+        </button>
+        <button class="tab-button" data-tab="sent">
+          Sent (${offers.sent.length})
+        </button>
+      </div>
+      
+      <div class="trade-offers-list" id="received-offers">
+        ${offers.received.map(offer => createTradeOfferElement(offer, 'received')).join('')}
+      </div>
+      
+      <font class="trade-offers-list" id="sent-offers" style="display: none;">
+        ${offers.sent.map(offer => createTradeOfferElement(offer, 'sent')).join('')}
+      </div>
+    </div>
+  `;
+  
+  // Display in your UI (could be a modal or a section)
+  // This is just an example
+  showTradeOffersModal(tradeOffersHTML);
+}
+
+
+
+
+
+
+
+
+function showTradeOffersModal(htmlContent) {
+  // Remove existing modal if it exists
+  const existingModal = document.getElementById('trade-offers-modal');
+  if (existingModal) {
+    existingModal.remove();
+  }
+
+  // Create modal element
+  const modal = document.createElement('div');
+  modal.id = 'trade-offers-modal';
+  modal.className = 'modal-overlay';
+  modal.style.display = 'flex';
+  
+  modal.innerHTML = `
+    <div class="modal-content" style="width: 800px; max-width: 90%; max-height: 85vh; display: flex; flex-direction: column;">
+      <button class="modal-close-btn" onclick="closeTradeOffersModal()" style="position: absolute; top: 20px; right: 20px; background: none; border: none; color: var(--text-muted); font-size: 1.5rem; cursor: pointer;">×</button>
+      ${htmlContent}
+    </div>
+  `;
+  
+  document.body.appendChild(modal);
+  
+  // Setup tab functionality
+  setupTradeTabs();
+  
+  // Close modal when clicking outside
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) {
+      closeTradeOffersModal();
+    }
+  });
+}
+
+function closeTradeOffersModal() {
+  const modal = document.getElementById('trade-offers-modal');
+  if (modal) {
+    modal.style.display = 'none';
+    modal.remove();
+  }
+}
+
+function setupTradeTabs() {
+  const tabButtons = document.querySelectorAll('.tab-button');
+  
+  tabButtons.forEach(button => {
+    button.addEventListener('click', () => {
+      // Remove active class from all tabs
+      tabButtons.forEach(btn => btn.classList.remove('active'));
+      // Add active to clicked tab
+      button.classList.add('active');
+      
+      // Hide all trade lists
+      document.getElementById('received-offers').style.display = 'none';
+      document.getElementById('sent-offers').style.display = 'none';
+      
+      // Show the selected tab content
+      const tabName = button.getAttribute('data-tab');
+      document.getElementById(`${tabName}-offers`).style.display = 'block';
+    });
+  });
+}
+
+
+
+
+
+
+
+
+
+function createTradeOfferElement(offer, type) {
+  const stateClass = getStateClass(offer.state);
+  const canAct = offer.state === 2 && type === 'received'; // Active and received
+  
+  return `
+    <div class="trade-offer ${stateClass}" data-offer-id="${offer.id}">
+      <div class="trade-offer-header">
+        <span class="trade-offer-partner">Partner: ${offer.partner}</span>
+        <span class="trade-offer-state">${offer.stateName}</span>
+      </div>
+      
+      <div class="trade-offer-items">
+        <div class="items-section">
+          <h4>You give (${offer.itemsToGive.length} items)</h4>
+          <div class="items-list">
+            ${offer.itemsToGive.map(item => `
+              <div class="trade-item">
+                ${item.market_hash_name || item.name}
+              </div>
+            `).join('')}
+          </div>
+        </div>
+        
+        <div class="items-section">
+          <h4>You receive (${offer.itemsToReceive.length} items)</h4>
+          <div class="items-list">
+            ${offer.itemsToReceive.map(item => `
+              <div class="trade-item">
+                ${item.market_hash_name || item.name}
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+      
+      ${offer.message ? `<div class="trade-offer-message">${offer.message}</div>` : ''}
+      
+      ${canAct ? `
+        <div class="trade-offer-actions">
+          <button class="btn btn-success btn-sm" onclick="acceptTradeOffer('${offer.id}')">
+            Accept
+          </button>
+          <button class="btn btn-danger btn-sm" onclick="declineTradeOffer('${offer.id}')">
+            Decline
+          </button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function getStateClass(state) {
+  // Trade offer states
+  const states = {
+    1: 'invalid',
+    2: 'active',
+    3: 'accepted',
+    4: 'countered',
+    5: 'expired',
+    6: 'canceled',
+    7: 'declined',
+    8: 'invalid-items',
+    9: 'needs-confirmation',
+    10: 'canceled-2fa',
+    11: 'in-escrow'
+  };
+  return `state-${states[state] || 'unknown'}`;
+}
+
+async function acceptTradeOffer(offerId) {
+  try {
+    showLoading();
+    const result = await window.electronAPI.acceptTradeOffer(offerId);
+    hideLoading();
+    
+    if (result.success) {
+      toast.success('Trade offer accepted successfully');
+      fetchTradeOffers(); // Refresh the list
+    }
+  } catch (error) {
+    hideLoading();
+    toast.error('Failed to accept trade offer');
+  }
+}
+
+async function declineTradeOffer(offerId) {
+  try {
+    showLoading();
+    const result = await window.electronAPI.declineTradeOffer(offerId);
+    hideLoading();
+    
+    if (result.success) {
+      toast.success('Trade offer declined');
+      fetchTradeOffers(); // Refresh the list
+    }
+  } catch (error) {
+    hideLoading();
+    toast.error('Failed to decline trade offer');
+  }
+}
+
+// Listen for real-time trade offer updates
+window.electronAPI.onNewTradeOffer((offer) => {
+  toast.info(`New trade offer received from ${offer.partner}`);
+  // Optionally refresh the trade offers list
+  fetchTradeOffers();
+});
+
+window.electronAPI.onTradeOfferUpdated((data) => {
+  logger.log('Trade offer updated', data);
+  // Optionally refresh the trade offers list
+  fetchTradeOffers();
+});
 
 
 function setupUpdateHandlers() {

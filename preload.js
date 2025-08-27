@@ -50,6 +50,14 @@ onSetAutoScanPending: (callback) => ipcRenderer.on('set-auto-scan-pending', call
 
   onDeviceTokenExpired: (callback) => ipcRenderer.on('device-token-expired', callback),
   refreshDeviceToken: () => ipcRenderer.invoke('refresh-device-token'),
+
+  fetchTradeOffers: () => ipcRenderer.invoke('fetch-trade-offers'),
+  acceptTradeOffer: (offerId) => ipcRenderer.invoke('accept-trade-offer', offerId),
+  declineTradeOffer: (offerId) => ipcRenderer.invoke('decline-trade-offer', offerId),
+
+  // Event listeners
+  onNewTradeOffer: (callback) => ipcRenderer.on('new-trade-offer', (event, offer) => callback(offer)),
+  onTradeOfferUpdated: (callback) => ipcRenderer.on('trade-offer-updated', (event, data) => callback(data)),
   
   // Add these to the electronAPI exposure in contextBridge.exposeInMainWorld
   onPleaseEnterEmail: (callback) => ipcRenderer.on('please-enter-email', callback),

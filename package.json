@@ -38,6 +38,7 @@
     "globaloffensive": "^3.2.0",
     "jwt-decode": "^3.1.2",
     "keytar": "^7.9.0",
+    "steam-tradeoffer-manager": "^2.12.2",
     "steam-user": "^5.2.0",
     "steamcommunity": "^3.48.6"
   },
@@ -54,22 +55,22 @@
     "directories": {
       "output": "dist"
     },
-  "files": [
-    "main.js",
-    "renderer.js",
-    "preload.js",
-    "styles.css",
-    "index.html",
-    "src/**/*",          
-    "static/**/*",
-    "node_modules/**/*",
-    "!node_modules/.cache",
-    "!dist/**/*",
-    "!.git/**/*",
-    "!.gitignore",
-    "!build-and-upload.js",
-    "!delete-keytar.js"
-  ],
+    "files": [
+      "main.js",
+      "renderer.js",
+      "preload.js",
+      "styles.css",
+      "index.html",
+      "src/**/*",
+      "static/**/*",
+      "node_modules/**/*",
+      "!node_modules/.cache",
+      "!dist/**/*",
+      "!.git/**/*",
+      "!.gitignore",
+      "!build-and-upload.js",
+      "!delete-keytar.js"
+    ],
     "extraResources": [
       {
         "from": "static/",
