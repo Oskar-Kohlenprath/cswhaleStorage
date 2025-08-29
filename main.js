@@ -1,12 +1,11 @@
 // main.js
+// main.js
 require("dotenv").config();
-const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, Notification } = require("electron");
 const path = require("path");
 const fs = require('fs');
 const os = require('os');
 
-
-// Steam libraries
 const SteamUser = require("steam-user");
 const GlobalOffensive = require("globaloffensive");
 const SteamCommunity = require("steamcommunity");
@@ -14,9 +13,12 @@ const axios = require("axios");
 const keytar = require("keytar");
 const jwt_decode = require("jwt-decode");
 const { autoUpdater } = require("electron-updater");
+const TradeOfferManager = require('steam-tradeoffer-manager');
 
 const ItemEnricher = require('./src/enrichment/itemEnricher');
-let itemEnricher; // Define globally
+const BackgroundTradeMonitor = require('./src/services/backgroundTradeMonitor');
+
+let itemEnricher;
 
 
 // Constants
@@ -32,10 +34,9 @@ const MAX_CASKET_SIZE = 1000;
 const INVENTORY_BUFFER = 50; // Increased buffer for safety
 const SAFE_INVENTORY_SIZE = MAX_INVENTORY_SIZE - INVENTORY_BUFFER;
 const API_BASE_URL = "https://cswhale-green-dust-4483.fly.dev/api";
-const TradeOfferManager = require('steam-tradeoffer-manager');
 
 // Global variables
-let mainWindow;
+let mainWindow = null;  // Start as null, create only when needed
 let user; // SteamUser instance
 let csgo; // GlobalOffensive instance
 let community; // SteamCommunity instance
@@ -43,11 +44,17 @@ let lastReceivedToken = null;
 let logStream; // For file logging
 let deviceTokenRequestInProgress = false;
 let manager; // Add this to your global variables
+let tray = null;
+let backgroundMonitor = null;
+let isQuitting = false;
+let windowCreated = false;
 
 
 
-
-
+// IMPORTANT: Hide dock icon on macOS immediately
+if (process.platform === 'darwin') {
+  app.dock.hide();
+}
 
 
 
@@ -366,30 +373,32 @@ async function withDeviceTokenRetry(apiCall, ...args) {
 /**
  * Create the main application window
  */
+// Create window only when needed (lazy loading)
 function createWindow() {
+  if (mainWindow) {
+    mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
 
-
-    let iconPath;
+  logger.info('Creating main window...');
+  
+  let iconPath;
   if (process.platform === 'win32') {
-    // Windows needs .ico file
     iconPath = app.isPackaged 
       ? path.join(process.resourcesPath, 'static/images/icons/icon.ico')
       : path.join(__dirname, 'static/images/icons/icon.ico');
   } else if (process.platform === 'darwin') {
-    // macOS uses .icns
     iconPath = app.isPackaged
       ? path.join(process.resourcesPath, 'static/images/icons/icon.icns')
       : path.join(__dirname, 'static/images/icons/icon.icns');
   } else {
-    // Linux uses .png
     iconPath = app.isPackaged
       ? path.join(process.resourcesPath, 'static/images/icons/icon.png')
       : path.join(__dirname, 'static/images/icons/icon.png');
   }
 
-
-
-    mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     icon: iconPath,
@@ -398,65 +407,61 @@ function createWindow() {
       contextIsolation: true,
       enableRemoteModule: false,
     },
+    show: false, // Never show automatically
+    skipTaskbar: true, // IMPORTANT: Don't show in taskbar
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0f172a',
-    show: false,
   });
 
-  // Create splash screen
-  const splash = new BrowserWindow({
-    width: 400,
-    height: 400,
-    transparent: true,
-    frame: false,
-    alwaysOnTop: true,
-    center: true,
-  });
-
-  splash.loadFile("static/splash.html");
   mainWindow.loadFile("index.html");
+  windowCreated = true;
 
-  // Show main window when it's ready, and close splash screen
-  mainWindow.once('ready-to-show', () => {
-    splash.destroy();
-    mainWindow.show();
-    
-    // Check for updates after window is shown
-    // Check for updates after window is shown
-  if (app.isPackaged) {  // Only in production
-      setTimeout(() => {
-          logger.info('=== AUTO-UPDATE CHECK ===');
-          logger.info(`App version: ${app.getVersion()}`);
-          logger.info(`Platform: ${process.platform}`);
-          logger.info(`Architecture: ${process.arch}`);
-          logger.info(`Electron version: ${process.versions.electron}`);
-          
-          autoUpdater.checkForUpdatesAndNotify()
-              .then(result => {
-                  logger.info('Update check initiated successfully');
-                  if (result) {
-                      logger.info(`Update check result: ${JSON.stringify(result)}`);
-                  }
-              })
-              .catch(err => {
-                  logger.error('Update check failed:', err);
-                  logger.error(`Error details: ${err.message}`);
-                  logger.error(`Network available: ${require('electron').net.isOnline()}`);
-              });
-      }, 3000);
-  }
-});
+  // Window event handlers
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+      
+      // On Windows, ensure it's removed from taskbar
+      if (process.platform === 'win32') {
+        mainWindow.setSkipTaskbar(true);
+      }
+      
+      return false;
+    }
+  });
 
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    windowCreated = false;
+  });
+
+  // When showing window, add to taskbar
+  mainWindow.on('show', () => {
+    if (process.platform === 'win32') {
+      mainWindow.setSkipTaskbar(false);
+    }
+    // Show dock icon on macOS when window is shown
+    if (process.platform === 'darwin') {
+      app.dock.show();
+    }
+  });
+
+  // When hiding window, remove from taskbar
+  mainWindow.on('hide', () => {
+    if (process.platform === 'win32') {
+      mainWindow.setSkipTaskbar(true);
+    }
+    // Hide dock icon on macOS when window is hidden
+    if (process.platform === 'darwin') {
+      app.dock.hide();
+    }
+  });
 
   // Open DevTools only in development
   if (process.env.NODE_ENV === 'development') {
     mainWindow.webContents.openDevTools();
   }
-  
-  // Handle window close
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
 }
 
 
@@ -471,68 +476,329 @@ function createWindow() {
 
 
 
+function createTray() {
+  const iconPath = app.isPackaged 
+    ? path.join(process.resourcesPath, 'static/images/icons/icon.png')
+    : path.join(__dirname, 'static/images/icons/icon.png');
+  
+  const trayIcon = nativeImage.createFromPath(iconPath);
+  
+  // Resize for Windows (16x16 for tray)
+  if (process.platform === 'win32') {
+    tray = new Tray(trayIcon.resize({ width: 16, height: 16 }));
+  } else {
+    tray = new Tray(trayIcon);
+  }
+  
+  updateTrayMenu();
+  
+  tray.setToolTip('CSWhale Trade Monitor - Running');
+  
+  // Click events to show window
+  tray.on('double-click', () => {
+    showMainWindow();
+  });
+  
+  if (process.platform !== 'win32') {
+    tray.on('click', () => {
+      showMainWindow();
+    });
+  }
+}
+
+function showMainWindow() {
+  if (!mainWindow) {
+    createWindow();
+  }
+  
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    
+    // Make sure window is in taskbar when shown
+    if (process.platform === 'win32') {
+      mainWindow.setSkipTaskbar(false);
+    }
+  }
+}
+
+function updateTrayMenu() {
+  if (!tray) return;
+  
+  const status = backgroundMonitor?.getStatus() || {};
+  
+  const menuTemplate = [
+    {
+      label: '🖥️ Open CSWhale',
+      font: 'bold',
+      click: () => {
+        showMainWindow();
+      }
+    },
+    { type: 'separator' },
+    {
+      label: `Monitor: ${status.isRunning ? '✅ Active' : '❌ Inactive'}`,
+      enabled: false
+    }
+  ];
+  
+  if (status.isRunning && status.lastCheckTime) {
+    menuTemplate.push({
+      label: `Last Check: ${status.lastCheckTime.toLocaleTimeString()}`,
+      enabled: false
+    });
+    
+    if (status.accountsChecked > 0) {
+      menuTemplate.push({
+        label: `${status.accountsChecked} accounts | ${status.totalReceived} received, ${status.totalSent} sent`,
+        enabled: false
+      });
+    }
+  }
+  
+  menuTemplate.push(
+    { type: 'separator' },
+    {
+      label: '🔄 Check All Accounts Now',
+      click: async () => {
+        const notification = new Notification({
+          title: 'Checking Trades',
+          body: 'Checking all accounts for trade offers...',
+          icon: path.join(__dirname, 'static/images/icons/icon.png')
+        });
+        notification.show();
+        
+        const results = await backgroundMonitor.checkAllAccounts();
+        updateTrayMenu();
+        
+        const totalOffers = results.reduce((sum, r) => 
+          sum + (r.received_offers?.length || 0), 0
+        );
+        
+        new Notification({
+          title: 'Check Complete',
+          body: `Found ${totalOffers} trade offers across ${results.length} accounts`,
+          icon: path.join(__dirname, 'static/images/icons/icon.png')
+        }).show();
+      }
+    },
+    {
+      label: `Next Check: in ${getTimeUntilNextCheck()} minutes`,
+      enabled: false
+    },
+    { type: 'separator' },
+    {
+      label: '⚙️ Settings',
+      submenu: [
+        {
+          label: 'Run at Startup',
+          type: 'checkbox',
+          checked: app.getLoginItemSettings().openAtLogin,
+          click: (item) => {
+            app.setLoginItemSettings({
+              openAtLogin: item.checked,
+              openAsHidden: true,
+              args: ['--background']
+            });
+            logger.info(`Run at startup: ${item.checked ? 'enabled' : 'disabled'}`);
+          }
+        },
+        {
+          label: 'Check Interval',
+          submenu: [
+            {
+              label: '15 minutes',
+              type: 'radio',
+              checked: (status.checkInterval === 15),
+              click: () => updateCheckInterval(15)
+            },
+            {
+              label: '30 minutes',
+              type: 'radio',
+              checked: (status.checkInterval === 30),
+              click: () => updateCheckInterval(30)
+            },
+            {
+              label: '1 hour',
+              type: 'radio',
+              checked: (status.checkInterval === 60),
+              click: () => updateCheckInterval(60)
+            }
+          ]
+        },
+        {
+          label: 'Notifications',
+          type: 'checkbox',
+          checked: getSettings().notificationsEnabled !== false,
+          click: (item) => {
+            saveSettings({ notificationsEnabled: item.checked });
+          }
+        }
+      ]
+    },
+    { type: 'separator' },
+    {
+      label: '❌ Quit (Stop Monitoring)',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      }
+    }
+  );
+  
+  const contextMenu = Menu.buildFromTemplate(menuTemplate);
+  tray.setContextMenu(contextMenu);
+}
+
+function getTimeUntilNextCheck() {
+  const status = backgroundMonitor?.getStatus();
+  if (!status || !status.lastCheckTime) return 'unknown';
+  
+  const nextCheckTime = new Date(status.lastCheckTime.getTime() + (status.checkInterval * 60 * 1000));
+  const now = new Date();
+  const minutesUntilNext = Math.max(0, Math.round((nextCheckTime - now) / 60000));
+  
+  return minutesUntilNext;
+}
+
+function updateCheckInterval(minutes) {
+  if (backgroundMonitor) {
+    backgroundMonitor.CHECK_INTERVAL_MINUTES = minutes;
+    backgroundMonitor.stop();
+    backgroundMonitor.start();
+    saveSettings({ checkInterval: minutes });
+    updateTrayMenu();
+  }
+}
+
+
+const settingsPath = path.join(app.getPath('userData'), 'settings.json');
+
+function getSettings() {
+  try {
+    if (fs.existsSync(settingsPath)) {
+      return JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    }
+  } catch (error) {
+    logger.error('Failed to load settings:', error);
+  }
+  return {
+    checkInterval: 30,
+    notificationsEnabled: true
+  };
+}
+
+function saveSettings(updates) {
+  try {
+    const current = getSettings();
+    const updated = { ...current, ...updates };
+    fs.writeFileSync(settingsPath, JSON.stringify(updated, null, 2));
+  } catch (error) {
+    logger.error('Failed to save settings:', error);
+  }
+}
 
 
 
 
-
+ 
 
 /**
  * Initialize application
  */
 app.whenReady().then(async () => {
-  logger.info("Application starting...");
+  logger.info("=== CSWhale Background Service Starting ===");
   
-  // Create community instance
+  // Create system tray immediately
+  createTray();
+  logger.info("System tray created");
+  
+  // Initialize Steam community (needed for trade manager)
   community = new SteamCommunity();
   
-  // Initialize window
-  createWindow();
-
-  // Validate tokens
-  await validateAllStoredTokens();
-
-  // CHANGE THIS: Don't await item enricher, let it run in background
-  // OLD WAY (blocking):
-  // itemEnricher = new ItemEnricher(logger);
-  // await itemEnricher.initialize();
-
-  // NEW WAY (non-blocking):
+  // Initialize background monitor and start it
+  backgroundMonitor = new BackgroundTradeMonitor(logger, keytar, SERVICE_NAME);
+  
+  try {
+    await backgroundMonitor.start();
+    logger.info("✅ Background trade monitor started successfully");
+    updateTrayMenu();
+    
+    // Show startup notification
+    if (getSettings().notificationsEnabled) {
+      new Notification({
+        title: 'CSWhale Trade Monitor',
+        body: 'Background monitoring started. Checking all accounts every 30 minutes.',
+        icon: path.join(__dirname, 'static/images/icons/icon.png')
+      }).show();
+    }
+  } catch (err) {
+    logger.error("❌ Failed to start background monitor:", err);
+    
+    new Notification({
+      title: 'CSWhale Error',
+      body: 'Failed to start trade monitoring. Check logs for details.',
+      icon: path.join(__dirname, 'static/images/icons/icon.png')
+    }).show();
+  }
+  
+  // Update tray menu every minute to show countdown
+  setInterval(() => {
+    updateTrayMenu();
+  }, 60000);
+  
+  // Initialize item enricher in background (non-blocking)
   itemEnricher = new ItemEnricher(logger);
   itemEnricher.initialize().catch(err => {
     logger.error('Failed to initialize item enricher', err);
   });
-
-  try {
-    const deviceToken = await keytar.getPassword(SERVICE_NAME, DEVICE_TOKEN_KEY);
-    if (deviceToken) {
-      await fetchAndUpdateAccountsFromFlaskEnhanced(deviceToken);
-    }
-  } catch (err) {
-    logger.error("Error fetching accounts on startup", err);
-  }
-
-  // ADD THIS: Force refresh accounts after everything is ready
-  setTimeout(() => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      logger.info('Triggering account refresh after initialization');
-      mainWindow.webContents.executeJavaScript(`
-        // This is exactly what happens when you click Switch Account
-        showView('login');
-      `);
-    }
-  }, 1000); // Give everything time to load
+  
+  // DON'T create window unless explicitly requested
+  // Window will be created on-demand when user clicks tray icon
+  
+  logger.info("=== Background Service Ready ===");
+  logger.info("Running in system tray. No window created.");
 });
 
+// Ensure single instance
+const gotTheLock = app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (event, commandLine) => {
+    // If user tries to open app again, show the window
+    if (commandLine.includes('--show') || !commandLine.includes('--background')) {
+      showMainWindow();
+    }
+  });
+}
 
 
 
+app.on('before-quit', () => {
+  logger.info('=== CSWhale Background Service Shutting Down ===');
+  isQuitting = true;
+  
+  if (backgroundMonitor) {
+    backgroundMonitor.stop();
+    logger.info('Background monitor stopped');
+  }
+  
+  if (tray) {
+    tray.destroy();
+  }
+  
+  if (logStream) {
+    logStream.end();
+  }
+});
 
-
-// Quit when all windows are closed, except on macOS
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
+app.on('window-all-closed', (event) => {
+  // On macOS and Windows, keep app running in background
+  if (process.platform !== 'linux') {
+    event.preventDefault();
   }
 });
 
@@ -545,6 +811,23 @@ app.on('activate', () => {
 
 
 
+const createWindowIfNeeded = () => {
+  if (!mainWindow) {
+    createWindow();
+  }
+};
+
+
+const originalLoginHandler = ipcMain.handle.bind(ipcMain);
+ipcMain.handle = function(channel, handler) {
+  if (['login-credentials', 'fetch-storage', 'casket-deep-check'].includes(channel)) {
+    return originalLoginHandler(channel, async (...args) => {
+      createWindowIfNeeded();
+      return handler(...args);
+    });
+  }
+  return originalLoginHandler(channel, handler);
+};
 
 
 // Fetch all trade offers

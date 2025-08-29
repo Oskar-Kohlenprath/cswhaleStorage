@@ -10,7 +10,10 @@
     "url": "https://github.com/Oskar-Kohlenprath/cswhaleDesktop.git"
   },
   "scripts": {
-    "start": "electron .",
+    "start": "electron . --background",
+    "start-bg": "electron . --background",
+    "start-show": "electron . --show",
+    "dev": "NODE_ENV=development electron .",
     "generate-icons": "electron-icon-builder --input=./icon-source.png --output=./static/images --flatten",
     "build": "electron-builder",
     "build-win": "electron-builder --win",
