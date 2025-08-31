@@ -8,7 +8,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Add these for Flask integration
   isElectron: true,
+
+
+
   
+  checkAccountToken: (steamId) => ipcRenderer.invoke('check-account-token', steamId),
+  loginWithCredentials: (credentials) => ipcRenderer.invoke('login-with-credentials', credentials),
+  getCurrentSteamSession: () => ipcRenderer.invoke('get-current-steam-session'),
+  
+  // Storage scanning with account
+  scanStorageForAccount: (steamId) => ipcRenderer.invoke('scan-storage-for-account', steamId),
+  
+  // Events
+  onCredentialsRequired: (callback) => ipcRenderer.on('credentials-required', (event, data) => callback(data)),
+
+
   // Use existing login handler
   steamLoginWithToken: (steamId) => ipcRenderer.invoke('login-with-refresh-token', steamId),
   

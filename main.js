@@ -429,20 +429,36 @@ function createWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     logger.info('Flask app loaded in Electron wrapper');
     
-    // Inject a flag so Flask JS knows it's running in Electron
+    // Inject desktop app information
     mainWindow.webContents.executeJavaScript(`
-      window.__CSWHALE_DESKTOP__ = true;
-      console.log('CSWhale Desktop mode activated');
-      
-      // Dispatch event to notify Flask app that desktop features are available
-      window.dispatchEvent(new CustomEvent('cswhale-desktop-ready', { 
-        detail: { 
-          version: '${app.getVersion()}',
-          platform: '${process.platform}'
+        // Set global flags before any scripts run
+        window.__CSWHALE_DESKTOP__ = true;
+        window.__CSWHALE_VERSION__ = '${app.getVersion()}';
+        window.__CSWHALE_PLATFORM__ = '${process.platform}';
+        
+        // Update the global variables if they exist
+        if (typeof window.IS_DESKTOP_APP !== 'undefined') {
+            window.IS_DESKTOP_APP = true;
+            window.DESKTOP_VERSION = '${app.getVersion()}';
+            window.DESKTOP_PLATFORM = '${process.platform}';
+            
+            // Add desktop class to body
+            if (document.body) {
+                document.body.classList.add('desktop-app');
+                document.body.classList.remove('web-app');
+            }
+            
+            console.log('✅ Desktop mode activated via Electron wrapper');
         }
-      }));
+        
+        // Verify the API is available
+        if (window.electronAPI && window.electronAPI.isElectron) {
+            console.log('✅ Electron API is available');
+        } else {
+            console.error('❌ Electron API not found - check preload script');
+        }
     `);
-  });
+});
 
   // Handle navigation to stay within the app
   mainWindow.webContents.on('new-window', (event, url) => {
@@ -508,12 +524,273 @@ function createWindow() {
   }
 }
 
+// Add this near your other IPC handlers (around line 300)
+ipcMain.handle('login-with-qr', async () => {
+  try {
+    await terminateSteamSession();
+    
+    return new Promise((resolve, reject) => {
+      // Reset the lastReceivedToken for this login session
+      lastReceivedToken = null;
+      
+      // Create new user and csgo instances
+      user = new SteamUser();
+      csgo = new GlobalOffensive(user);
+      
+      // Initialize trade manager
+      manager = new TradeOfferManager({
+        steam: user,
+        community: community,
+        language: 'en',
+        pollInterval: 10000,
+        cancelTime: 300000,
+        pendingCancelTime: 30000
+      });
+      
+      // Handle QR code generation
+      user.on('qr', (challengeUrl) => {
+        logger.info('QR code generated for login');
+        
+        // Send QR code URL to renderer
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('qr-code-generated', challengeUrl);
+        }
+        
+        resolve({ 
+          success: true, 
+          qrUrl: challengeUrl 
+        });
+      });
+      
+      // Handle successful login (reuse existing logic)
+      user.on("loggedOn", async () => {
+        const steamId = user.steamID.getSteamID64();
+        logger.info(`QR login successful for ${steamId}`);
+        
+        user.setPersona(SteamUser.EPersonaState.Online);
+        user.gamesPlayed([730]);
+        
+        // Store the refresh token
+        let finalToken = lastReceivedToken;
+        
+        // Handle device token
+        let dt = await keytar.getPassword(SERVICE_NAME, DEVICE_TOKEN_KEY);
+        if (!dt) {
+          try {
+            dt = await ensureDeviceToken(steamId);
+            logger.info(`Device token confirmed`);
+          } catch (err) {
+            logger.error('Error ensuring device token', err);
+            return;
+          }
+        }
+        
+        // Get accounts from Flask API
+        try {
+          const accounts = await fetchAndUpdateAccountsFromFlaskEnhanced(dt);
+          const loggedInAccount = accounts.find(a => a.steamId === steamId);
+          
+          if (loggedInAccount && finalToken) {
+            await saveAccountData({
+              steamId,
+              displayName: loggedInAccount.displayName,
+              refreshToken: finalToken,
+              isRegistered: true,
+              avatarUrl: loggedInAccount.avatarUrl
+            });
+            
+            await removeTokenFromOtherAccounts(finalToken, steamId);
+          }
+          
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('qr-login-success', {
+              steamId,
+              displayName: loggedInAccount?.displayName || steamId,
+              avatarUrl: loggedInAccount?.avatarUrl || 'static/images/default-avatar.png'
+            });
+          }
+          
+        } catch (err) {
+          logger.error(`Error during QR login account processing`, err);
+          
+          if (finalToken) {
+            await saveAccountData({
+              steamId,
+              displayName: steamId,
+              refreshToken: finalToken
+            });
+            
+            await removeTokenFromOtherAccounts(finalToken, steamId);
+          }
+        }
+        
+        setupTradeOfferListeners();
+      });
+      
+      // Handle refresh token
+      user.on("refreshToken", (token) => {
+        if (!token) {
+          logger.warn("Got an empty refresh token from QR login");
+          return;
+        }
+        
+        logger.info(`Received refresh token from QR login`);
+        lastReceivedToken = token;
+      });
+      
+      // Handle web session (reuse existing)
+      user.on("webSession", (sessionID, cookies) => {
+        logger.info(`QR login: Obtained web session`);
+        community.setCookies(cookies);
+        manager.setCookies(cookies, (err) => {
+          if (err) {
+            logger.error('Failed to set trade manager cookies', err);
+          } else {
+            logger.info('Trade manager cookies set successfully');
+          }
+        });
+      });
+      
+      // Handle errors
+      user.on("error", (err) => {
+        logger.error(`QR login error`, err);
+        
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('qr-login-failed', err.message);
+        }
+        
+        reject(err);
+      });
+      
+      // CS:GO connection events
+      csgo.on("connectedToGC", () => {
+        logger.info("QR login: Connected to GC");
+      });
+      
+      // Start QR login - no credentials needed!
+      user.logOn({
+        qr: true  // This triggers QR code authentication
+      });
+    });
+    
+  } catch (error) {
+    logger.error('QR login initialization failed', error);
+    throw error;
+  }
+});
+
+ipcMain.handle('check-account-token', async (event, steamId) => {
+  try {
+    const accounts = await getAllAccounts();
+    const account = accounts.find(a => a.steamId === steamId);
+    
+    return {
+      hasToken: account && account.refreshToken && account.refreshToken.trim() !== '',
+      steamId: steamId,
+      displayName: account ? account.displayName : null
+    };
+  } catch (error) {
+    logger.error('Error checking account token:', error);
+    return { hasToken: false, steamId: steamId };
+  }
+});
+
+// Login with credentials from Flask UI
+ipcMain.handle('login-with-credentials', async (event, credentials) => {
+  try {
+    logger.info(`Login attempt for account: ${credentials.username}`);
+    
+    // Terminate any existing session
+    await terminateSteamSession();
+    
+    // Login with credentials
+    await initCSGO({
+      username: credentials.username,
+      password: credentials.password,
+      steamId: credentials.steamId // Pass along the steamId for tracking
+    });
+    
+    return { success: true, steamId: credentials.steamId };
+  } catch (error) {
+    logger.error('Login failed:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Get current Steam session info
+ipcMain.handle('get-current-steam-session', async () => {
+  if (user && user.steamID) {
+    return {
+      connected: true,
+      steamId: user.steamID.getSteamID64(),
+      hasGCSession: csgo && csgo.haveGCSession
+    };
+  }
+  return { connected: false };
+});
 
 
-
-
-
-
+ipcMain.handle('scan-storage-for-account', async (event, steamId) => {
+  try {
+    logger.info(`Storage scan requested for account: ${steamId}`);
+    
+    // Check current session
+    const currentSession = user && user.steamID ? user.steamID.getSteamID64() : null;
+    
+    // If different account or no session, need to login
+    if (currentSession !== steamId) {
+      logger.info(`Need to switch from ${currentSession} to ${steamId}`);
+      
+      // Check if we have a token for this account
+      const accounts = await getAllAccounts();
+      const account = accounts.find(a => a.steamId === steamId);
+      
+      if (account && account.refreshToken && account.refreshToken.trim() !== '') {
+        // Login with refresh token
+        logger.info(`Logging in with refresh token for ${steamId}`);
+        await terminateSteamSession();
+        await initCSGO({ refreshToken: account.refreshToken });
+        
+        // Wait for connection
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('Connection timeout')), 30000);
+          
+          const checkConnection = setInterval(() => {
+            if (csgo && csgo.haveGCSession) {
+              clearInterval(checkConnection);
+              clearTimeout(timeout);
+              resolve();
+            }
+          }, 500);
+        });
+      } else {
+        // No token, request credentials
+        logger.info(`No refresh token for ${steamId}, requesting credentials`);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('credentials-required', { steamId });
+        }
+        return { success: false, needsAuth: true };
+      }
+    }
+    
+    // Now we should have the right session, start scanning
+    logger.info('Starting storage scan...');
+    
+    // Trigger the existing scan-all logic
+    return new Promise((resolve) => {
+      ipcMain.once('scan-all-complete', (_, data) => {
+        resolve(data);
+      });
+      
+      // Trigger scan
+      ipcMain.emit('casket-deep-check-all', { sender: mainWindow?.webContents });
+    });
+    
+  } catch (error) {
+    logger.error('Storage scan failed:', error);
+    return { success: false, error: error.message };
+  }
+});
 
 
 function createTray() {
