@@ -10,7 +10,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   isElectron: true,
 
 
-
+  loginWithQR: () => ipcRenderer.invoke('login-with-qr'),
+  onQRCodeGenerated: (callback) => ipcRenderer.on('qr-code-generated', (event, url) => callback(url)),
+  onQRLoginSuccess: (callback) => ipcRenderer.on('qr-login-success', (event, data) => callback(data)),
+  onQRLoginFailed: (callback) => ipcRenderer.on('qr-login-failed', (event, error) => callback(error)),
   
   checkAccountToken: (steamId) => ipcRenderer.invoke('check-account-token', steamId),
   loginWithCredentials: (credentials) => ipcRenderer.invoke('login-with-credentials', credentials),

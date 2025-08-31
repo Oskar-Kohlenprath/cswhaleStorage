@@ -524,9 +524,14 @@ function createWindow() {
   }
 }
 
+
+
+// Add this near your other IPC handlers (around line 300)
+
 // Add this near your other IPC handlers (around line 300)
 ipcMain.handle('login-with-qr', async () => {
   try {
+    logger.info('QR login requested');
     await terminateSteamSession();
     
     return new Promise((resolve, reject) => {
@@ -547,22 +552,32 @@ ipcMain.handle('login-with-qr', async () => {
         pendingCancelTime: 30000
       });
       
+      let qrResolved = false;
+      
       // Handle QR code generation
-      user.on('qr', (challengeUrl) => {
+      user.on('qr', (challengeUrl, qrCodeUrl) => {
         logger.info('QR code generated for login');
+        logger.info(`Challenge URL: ${challengeUrl}`);
+        
+        // The challengeUrl is what the user needs to visit/scan
+        // Some versions of steam-user provide the QR image directly
+        const qrUrl = qrCodeUrl || `https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=${encodeURIComponent(challengeUrl)}`;
         
         // Send QR code URL to renderer
         if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('qr-code-generated', challengeUrl);
+          mainWindow.webContents.send('qr-code-generated', qrUrl);
         }
         
-        resolve({ 
-          success: true, 
-          qrUrl: challengeUrl 
-        });
+        if (!qrResolved) {
+          qrResolved = true;
+          resolve({ 
+            success: true, 
+            qrUrl: qrUrl
+          });
+        }
       });
       
-      // Handle successful login (reuse existing logic)
+      // Handle successful login
       user.on("loggedOn", async () => {
         const steamId = user.steamID.getSteamID64();
         logger.info(`QR login successful for ${steamId}`);
@@ -610,6 +625,13 @@ ipcMain.handle('login-with-qr', async () => {
             });
           }
           
+          // Check inventory needs
+          try {
+            await checkInventoryNeeds(steamId);
+          } catch (err) {
+            logger.error(`Inventory-needs check failed`, err);
+          }
+          
         } catch (err) {
           logger.error(`Error during QR login account processing`, err);
           
@@ -624,7 +646,10 @@ ipcMain.handle('login-with-qr', async () => {
           }
         }
         
-        setupTradeOfferListeners();
+        // Set up trade offer listeners
+        setTimeout(() => {
+          setupTradeOfferListeners();
+        }, 2000);
       });
       
       // Handle refresh token
@@ -638,7 +663,7 @@ ipcMain.handle('login-with-qr', async () => {
         lastReceivedToken = token;
       });
       
-      // Handle web session (reuse existing)
+      // Handle web session
       user.on("webSession", (sessionID, cookies) => {
         logger.info(`QR login: Obtained web session`);
         community.setCookies(cookies);
@@ -659,7 +684,10 @@ ipcMain.handle('login-with-qr', async () => {
           mainWindow.webContents.send('qr-login-failed', err.message);
         }
         
-        reject(err);
+        if (!qrResolved) {
+          qrResolved = true;
+          reject(err);
+        }
       });
       
       // CS:GO connection events
@@ -667,10 +695,19 @@ ipcMain.handle('login-with-qr', async () => {
         logger.info("QR login: Connected to GC");
       });
       
-      // Start QR login - no credentials needed!
+      // Start QR login
+      logger.info('Starting QR login process...');
       user.logOn({
-        qr: true  // This triggers QR code authentication
+        qr: true
       });
+      
+      // Set a timeout in case QR isn't generated
+      setTimeout(() => {
+        if (!qrResolved) {
+          logger.error('QR generation timeout');
+          reject(new Error('QR code generation timeout'));
+        }
+      }, 10000);
     });
     
   } catch (error) {
