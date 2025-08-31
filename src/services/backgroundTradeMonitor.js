@@ -278,7 +278,7 @@ class BackgroundTradeMonitor {
       }, 15000);
 
       manager.getOffers(
-        TradeOfferManager.EOfferFilter.ActiveOnly,
+        TradeOfferManager.EOfferFilter.All,  // ← CHANGED TO All
         (err, sent, received) => {
           clearTimeout(timeout);
           if (err) {

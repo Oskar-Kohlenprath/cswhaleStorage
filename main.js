@@ -369,11 +369,9 @@ async function withDeviceTokenRetry(apiCall, ...args) {
 
 
 
-
 /**
- * Create the main application window
+ * Create the main application window (Flask wrapper mode)
  */
-// Create window only when needed (lazy loading)
 function createWindow() {
   if (mainWindow) {
     mainWindow.show();
@@ -399,30 +397,80 @@ function createWindow() {
   }
 
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: 1400,  // Slightly wider for web app
+    height: 900,   // Slightly taller for web app
     icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       enableRemoteModule: false,
+      webSecurity: true,
+      nodeIntegration: false,
+      // Allow the Flask app to access Steam API through preload
+      partition: 'persist:cswhale'  // Persist session between app restarts
     },
-    show: false, // Never show automatically
-    skipTaskbar: true, // IMPORTANT: Don't show in taskbar
+    show: false,
+    skipTaskbar: true,
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0f172a',
   });
 
-  mainWindow.loadFile("index.html");
+  // Load Flask app with custom headers to identify Electron
+  const flaskUrl = process.env.FLASK_URL || 'https://cswhale-green-dust-4483.fly.dev';
+  
+  mainWindow.loadURL(flaskUrl, {
+    userAgent: mainWindow.webContents.getUserAgent() + ' CSWhaleDesktop/1.0',
+    extraHeaders: 'X-CSWhale-Desktop: true\n'
+  });
+  
   windowCreated = true;
 
-  // Window event handlers
+  // Inject custom CSS/JS after page loads to enable desktop features
+  mainWindow.webContents.on('did-finish-load', () => {
+    logger.info('Flask app loaded in Electron wrapper');
+    
+    // Inject a flag so Flask JS knows it's running in Electron
+    mainWindow.webContents.executeJavaScript(`
+      window.__CSWHALE_DESKTOP__ = true;
+      console.log('CSWhale Desktop mode activated');
+      
+      // Dispatch event to notify Flask app that desktop features are available
+      window.dispatchEvent(new CustomEvent('cswhale-desktop-ready', { 
+        detail: { 
+          version: '${app.getVersion()}',
+          platform: '${process.platform}'
+        }
+      }));
+    `);
+  });
+
+  // Handle navigation to stay within the app
+  mainWindow.webContents.on('new-window', (event, url) => {
+    event.preventDefault();
+    // Open external links in system browser
+    if (!url.startsWith(flaskUrl)) {
+      require('electron').shell.openExternal(url);
+    } else {
+      mainWindow.loadURL(url);
+    }
+  });
+
+  // Handle connection errors gracefully
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    logger.error(`Failed to load Flask app: ${errorDescription}`);
+    
+    // Load a local fallback page if Flask is unreachable
+    if (errorCode === -106 || errorCode === -105) { // ERR_INTERNET_DISCONNECTED or ERR_NAME_NOT_RESOLVED
+      mainWindow.loadFile(path.join(__dirname, 'offline.html'));
+    }
+  });
+
+  // Window event handlers (keep existing)
   mainWindow.on('close', (event) => {
     if (!isQuitting) {
       event.preventDefault();
       mainWindow.hide();
       
-      // On Windows, ensure it's removed from taskbar
       if (process.platform === 'win32') {
         mainWindow.setSkipTaskbar(true);
       }
@@ -436,23 +484,19 @@ function createWindow() {
     windowCreated = false;
   });
 
-  // When showing window, add to taskbar
   mainWindow.on('show', () => {
     if (process.platform === 'win32') {
       mainWindow.setSkipTaskbar(false);
     }
-    // Show dock icon on macOS when window is shown
     if (process.platform === 'darwin') {
       app.dock.show();
     }
   });
 
-  // When hiding window, remove from taskbar
   mainWindow.on('hide', () => {
     if (process.platform === 'win32') {
       mainWindow.setSkipTaskbar(true);
     }
-    // Hide dock icon on macOS when window is hidden
     if (process.platform === 'darwin') {
       app.dock.hide();
     }
@@ -463,10 +507,6 @@ function createWindow() {
     mainWindow.webContents.openDevTools();
   }
 }
-
-
-
-
 
 
 
@@ -754,11 +794,25 @@ app.whenReady().then(async () => {
     logger.error('Failed to initialize item enricher', err);
   });
   
-  // DON'T create window unless explicitly requested
-  // Window will be created on-demand when user clicks tray icon
+  // ============= ADD THIS SECTION =============
+  // Check if we should show the window
+  const shouldShowWindow = process.argv.includes('--show') || 
+                          process.argv.includes('--ui') ||
+                          process.env.NODE_ENV === 'development';
+  
+  if (shouldShowWindow) {
+    logger.info("Starting with UI visible");
+    createWindow();
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  } else {
+    logger.info("Running in system tray. No window created.");
+  }
+  // ============= END OF ADDED SECTION =============
   
   logger.info("=== Background Service Ready ===");
-  logger.info("Running in system tray. No window created.");
 });
 
 // Ensure single instance
@@ -867,6 +921,33 @@ ipcMain.handle('fetch-trade-offers', async () => {
     logger.error('Error stack:', error.stack);
     throw error;
   }
+});
+
+
+
+
+ipcMain.handle('scan-all-storage', async () => {
+  return new Promise((resolve) => {
+    // Reuse your existing casket-deep-check-all logic
+    const event = { sender: mainWindow?.webContents };
+    
+    // Listen for the completion event
+    ipcMain.once('scan-all-complete', (_, data) => {
+      resolve(data);
+    });
+    
+    // Trigger the existing scan logic
+    ipcMain.emit('casket-deep-check-all', event);
+  });
+});
+
+// Check if Steam is connected (this is new)
+ipcMain.handle('get-storage-status', async () => {
+  return {
+    connected: !!(user && csgo && csgo.haveGCSession),
+    steamId: user ? user.steamID.getSteamID64() : null,
+    hasSession: !!csgo
+  };
 });
 
 

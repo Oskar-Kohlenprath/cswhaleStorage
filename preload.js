@@ -2,6 +2,26 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+
+
+
+
+  // Add these for Flask integration
+  isElectron: true,
+  
+  // Use existing login handler
+  steamLoginWithToken: (steamId) => ipcRenderer.invoke('login-with-refresh-token', steamId),
+  
+  // New wrapper for scanning
+  scanAllStorage: () => ipcRenderer.invoke('scan-all-storage'),
+  getStorageStatus: () => ipcRenderer.invoke('get-storage-status'),
+  
+  // Your existing event listeners should work
+  onLoginSuccess: (callback) => ipcRenderer.on('login-success', callback),
+  onScanAllComplete: (callback) => ipcRenderer.on('scan-all-complete', (event, data) => callback(data)),
+  onScanAllStorageProgress: (callback) => ipcRenderer.on('scan-all-storage-progress', (event, data) => callback(data)),
+
+
   // Existing functions
   login: (credentials) => ipcRenderer.send('login-credentials', credentials),
   fetchStorage: () => ipcRenderer.send('fetch-storage'),
@@ -78,4 +98,15 @@ onSetAutoScanPending: (callback) => ipcRenderer.on('set-auto-scan-pending', call
   onUpdateAvailable: (callback) => ipcRenderer.on('update-available', (event, info) => callback(info)),
   onDownloadProgress: (callback) => ipcRenderer.on('download-progress', (event, progress) => callback(progress)),
   onUpdateDownloaded: (callback) => ipcRenderer.on('update-downloaded', (event, info) => callback(info)),
+});
+
+
+
+
+// Expose Steam operations to Flask app
+contextBridge.exposeInMainWorld('steamAPI', {
+  isElectron: true,
+  scanStorage: (casketId) => ipcRenderer.invoke('scan-storage', casketId),
+  moveItems: (items) => ipcRenderer.invoke('move-items', items),
+  getInventory: () => ipcRenderer.invoke('get-inventory'),
 });
