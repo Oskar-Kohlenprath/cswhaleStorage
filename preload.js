@@ -46,7 +46,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Existing functions
   login: (credentials) => ipcRenderer.send('login-credentials', credentials),
   fetchStorage: () => ipcRenderer.send('fetch-storage'),
-  sendSteamGuardCode: (code) => ipcRenderer.send('steamGuard-code', code),
   deepCheckCasket: (casketId) => ipcRenderer.send('casket-deep-check', casketId),
   
   onPleaseEnter2FA: (callback) => ipcRenderer.on('please-enter-2fa', callback),

@@ -431,35 +431,40 @@ function createWindow() {
   
   // Inject desktop app information AND Steam Guard modal
   mainWindow.webContents.executeJavaScript(`
-    // Set global flags before any scripts run
-    window.__CSWHALE_DESKTOP__ = true;
-    window.__CSWHALE_VERSION__ = '${app.getVersion()}';
-    window.__CSWHALE_PLATFORM__ = '${process.platform}';
-    
-    // Update the global variables if they exist
-    if (typeof window.IS_DESKTOP_APP !== 'undefined') {
-      window.IS_DESKTOP_APP = true;
-      window.DESKTOP_VERSION = '${app.getVersion()}';
-      window.DESKTOP_PLATFORM = '${process.platform}';
+    // Check if already injected
+    if (window.__STEAM_GUARD_INJECTED__) {
+      console.log('Steam Guard modal already injected, skipping');
+    } else {
+      window.__STEAM_GUARD_INJECTED__ = true;
       
-      // Add desktop class to body
-      if (document.body) {
-        document.body.classList.add('desktop-app');
-        document.body.classList.remove('web-app');
+      // Set global flags before any scripts run
+      window.__CSWHALE_DESKTOP__ = true;
+      window.__CSWHALE_VERSION__ = '${app.getVersion()}';
+      window.__CSWHALE_PLATFORM__ = '${process.platform}';
+      
+      // Update the global variables if they exist
+      if (typeof window.IS_DESKTOP_APP !== 'undefined') {
+        window.IS_DESKTOP_APP = true;
+        window.DESKTOP_VERSION = '${app.getVersion()}';
+        window.DESKTOP_PLATFORM = '${process.platform}';
+        
+        // Add desktop class to body
+        if (document.body) {
+          document.body.classList.add('desktop-app');
+          document.body.classList.remove('web-app');
+        }
+        
+        console.log('✅ Desktop mode activated via Electron wrapper');
       }
       
-      console.log('✅ Desktop mode activated via Electron wrapper');
-    }
-    
-    // Verify the API is available
-    if (window.electronAPI && window.electronAPI.isElectron) {
-      console.log('✅ Electron API is available');
-    } else {
-      console.error('❌ Electron API not found - check preload script');
-    }
-    
-    // INJECT STEAM GUARD MODAL HTML
-    if (!document.getElementById('steam-guard-modal-injected')) {
+      // Verify the API is available
+      if (window.electronAPI && window.electronAPI.isElectron) {
+        console.log('✅ Electron API is available');
+      } else {
+        console.error('❌ Electron API not found - check preload script');
+      }
+      
+      // INJECT STEAM GUARD MODAL HTML
       const modalHTML = \`
         <div id="steam-guard-modal-injected" style="
           position: fixed;
@@ -505,6 +510,7 @@ function createWindow() {
                   border: 1px solid #475569;
                   color: #f1f5f9;
                   outline: none;
+                  box-sizing: border-box;
                 "
                 onkeypress="if(event.key === 'Enter') document.getElementById('steam-guard-submit-injected').click()">
             </div>
@@ -534,46 +540,208 @@ function createWindow() {
         </div>
       \`;
       
-      document.body.insertAdjacentHTML('beforeend', modalHTML);
+      // Only inject if modal doesn't exist
+      if (!document.getElementById('steam-guard-modal-injected')) {
+        document.body.insertAdjacentHTML('beforeend', modalHTML);
+        console.log('✅ Steam Guard modal HTML injected');
+      }
       
-      // Add event listeners
-      document.getElementById('steam-guard-submit-injected').addEventListener('click', () => {
-        const code = document.getElementById('steam-guard-input-injected').value.trim();
-        if (code) {
-          console.log('Sending Steam Guard code to Electron');
-          window.electronAPI.sendSteamGuardCode(code);
+      // Add event listeners - but check if not already added
+      const submitBtn = document.getElementById('steam-guard-submit-injected');
+      if (submitBtn && !submitBtn.__listenerAdded) {
+        submitBtn.__listenerAdded = true;
+        submitBtn.addEventListener('click', () => {
+          const code = document.getElementById('steam-guard-input-injected').value.trim();
+          if (code) {
+            console.log('Sending Steam Guard code to Electron:', code.substring(0, 2) + '****');
+            window.electronAPI.sendSteamGuardCode(code);
+            
+            // Hide modal and clear input
+            document.getElementById('steam-guard-modal-injected').style.display = 'none';
+            document.getElementById('steam-guard-input-injected').value = '';
+          } else {
+            alert('Please enter a Steam Guard code');
+          }
+        });
+        console.log('✅ Submit button listener added');
+      }
+      
+      const cancelBtn = document.getElementById('steam-guard-cancel-injected');
+      if (cancelBtn && !cancelBtn.__listenerAdded) {
+        cancelBtn.__listenerAdded = true;
+        cancelBtn.addEventListener('click', () => {
+          console.log('Steam Guard cancelled');
           document.getElementById('steam-guard-modal-injected').style.display = 'none';
           document.getElementById('steam-guard-input-injected').value = '';
-        }
-      });
+        });
+        console.log('✅ Cancel button listener added');
+      }
       
-      document.getElementById('steam-guard-cancel-injected').addEventListener('click', () => {
-        document.getElementById('steam-guard-modal-injected').style.display = 'none';
-        document.getElementById('steam-guard-input-injected').value = '';
-      });
+      // Listen for Steam Guard required event - remove old listener first
+      if (window.__steamGuardListener) {
+        console.log('Clearing old Steam Guard listener');
+        // Clear any existing listener
+        window.__steamGuardHandler = null;
+      }
       
-      // Listen for Steam Guard required event
-      window.electronAPI.onSteamGuardRequired((domain) => {
+      window.__steamGuardListener = true;
+      
+      // Store the handler function so we can reference it
+      window.__steamGuardHandler = (domain) => {
         console.log('Steam Guard required for domain:', domain);
         const modal = document.getElementById('steam-guard-modal-injected');
         const prompt = document.getElementById('steam-guard-prompt-injected');
+        const input = document.getElementById('steam-guard-input-injected');
         
         if (modal) {
-          prompt.textContent = domain 
-            ? \`Enter Steam Guard code for \${domain}:\`
-            : 'Enter your Steam Guard code:';
+          // Check if modal is already visible
+          if (modal.style.display === 'flex') {
+            console.log('Steam Guard modal already visible, not showing again');
+            return;
+          }
           
+          // Update prompt text
+          if (prompt) {
+            prompt.textContent = domain 
+              ? \`Enter Steam Guard code for \${domain}:\`
+              : 'Enter your Steam Guard code:';
+          }
+          
+          // Clear any previous input
+          if (input) {
+            input.value = '';
+            input.disabled = false;
+          }
+          
+          // Show modal
           modal.style.display = 'flex';
           
-          // Focus the input
+          // Focus the input after a short delay
           setTimeout(() => {
-            const input = document.getElementById('steam-guard-input-injected');
-            if (input) input.focus();
+            if (input) {
+              input.focus();
+              input.select();
+            }
           }, 100);
+        } else {
+          console.error('Steam Guard modal not found!');
         }
-      });
+      };
       
-      console.log('✅ Steam Guard modal injected');
+      // Register the handler
+      if (window.electronAPI && window.electronAPI.onSteamGuardRequired) {
+        window.electronAPI.onSteamGuardRequired(window.__steamGuardHandler);
+        console.log('✅ Steam Guard event listener registered');
+      } else {
+        console.error('❌ electronAPI.onSteamGuardRequired not available');
+      }
+      
+      // Also handle 2FA modal if needed
+      if (!document.getElementById('device-2fa-modal-injected')) {
+        const device2FAModalHTML = \`
+          <div id="device-2fa-modal-injected" style="
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(5px);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 10000;
+          ">
+            <div style="
+              background: #1e293b;
+              border: 1px solid rgba(255, 255, 255, 0.1);
+              padding: 32px;
+              border-radius: 12px;
+              width: 450px;
+              max-width: 90%;
+              box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            ">
+              <h2 style="
+                font-size: 1.5rem;
+                margin-bottom: 16px;
+                color: #f1f5f9;
+                font-weight: 700;
+              ">2FA Verification</h2>
+              <div style="margin-bottom: 24px;">
+                <p style="
+                  color: #94a3b8;
+                  margin-bottom: 16px;
+                ">Please enter the verification code sent to your email:</p>
+                <input type="text" id="device-2fa-input-injected" 
+                  placeholder="Enter 6-digit code"
+                  maxlength="6"
+                  style="
+                    width: 100%;
+                    padding: 12px 16px;
+                    font-size: 1rem;
+                    border-radius: 8px;
+                    background-color: #334155;
+                    border: 1px solid #475569;
+                    color: #f1f5f9;
+                    outline: none;
+                    box-sizing: border-box;
+                  "
+                  onkeypress="if(event.key === 'Enter') document.getElementById('device-2fa-submit-injected').click()">
+              </div>
+              <div style="display: flex; justify-content: flex-end;">
+                <button id="device-2fa-submit-injected" style="
+                  padding: 10px 24px;
+                  background: #3b82f6;
+                  color: white;
+                  border: none;
+                  border-radius: 8px;
+                  font-weight: 600;
+                  cursor: pointer;
+                  transition: all 0.2s;
+                ">Submit</button>
+              </div>
+            </div>
+          </div>
+        \`;
+        
+        document.body.insertAdjacentHTML('beforeend', device2FAModalHTML);
+        
+        // Add 2FA event listeners
+        const device2FASubmit = document.getElementById('device-2fa-submit-injected');
+        if (device2FASubmit) {
+          device2FASubmit.addEventListener('click', () => {
+            const code = document.getElementById('device-2fa-input-injected').value.trim();
+            if (code) {
+              console.log('Sending 2FA code to Electron');
+              window.electronAPI.send2FACode(code);
+              document.getElementById('device-2fa-modal-injected').style.display = 'none';
+              document.getElementById('device-2fa-input-injected').value = '';
+            }
+          });
+        }
+        
+        // Listen for 2FA required event
+        if (window.electronAPI && window.electronAPI.onPleaseEnter2FA) {
+          window.electronAPI.onPleaseEnter2FA(() => {
+            console.log('2FA verification required');
+            const modal = document.getElementById('device-2fa-modal-injected');
+            if (modal) {
+              modal.style.display = 'flex';
+              setTimeout(() => {
+                const input = document.getElementById('device-2fa-input-injected');
+                if (input) {
+                  input.value = '';
+                  input.focus();
+                }
+              }, 100);
+            }
+          });
+        }
+        
+        console.log('✅ 2FA modal injected');
+      }
+      
+      console.log('✅ All injection complete');
     }
   `);
 });
@@ -2400,6 +2568,26 @@ function formatTradeOffer(offer) {
   };
 }
 
+
+// Add this as a separate handler outside of initCSGO function
+ipcMain.on("steamGuard-code", (_event, code) => {
+  logger.info(`Received SteamGuard code from renderer`);
+  
+  if (steamGuardCallback && steamGuardPending) {
+    steamGuardPending = false;
+    const callback = steamGuardCallback;
+    steamGuardCallback = null;
+    callback(code);
+  } else {
+    logger.warn('Received Steam Guard code but no callback pending');
+  }
+});
+
+// Add these with your other global variables at the top of main.js
+let steamGuardCallback = null;
+let steamGuardPending = false;
+
+
 /**
  * Initialize CS:GO connection
  * @param {Object} credentials - Login credentials
@@ -2414,6 +2602,10 @@ async function initCSGO(credentials) {
 
     // Reset the lastReceivedToken for this login session
     lastReceivedToken = null;
+    
+    // Clear any pending Steam Guard state
+    steamGuardCallback = null;
+    steamGuardPending = false;
 
     // Create new user and csgo instances
     user = new SteamUser();
@@ -2585,16 +2777,24 @@ async function initCSGO(credentials) {
       });
     });
 
-    // Steam Guard handling
+    // Steam Guard handling - FIXED VERSION
     user.on("steamGuard", (domain, callback) => {
       logger.info(`SteamGuard code required for domain: ${domain}`);
+      
+      // Prevent multiple Steam Guard prompts
+      if (steamGuardPending) {
+        logger.warn('Steam Guard already pending, ignoring duplicate request');
+        return;
+      }
+      
+      steamGuardPending = true;
+      steamGuardCallback = callback;
+      
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send("steamGuard-required", domain);
-        ipcMain.once("steamGuard-code", (_event, code) => {
-          logger.info(`Received SteamGuard code from renderer`);
-          callback(code);
-        });
       } else {
+        steamGuardPending = false;
+        steamGuardCallback = null;
         reject(new Error("Main window not available for SteamGuard prompt."));
       }
     });
@@ -2602,6 +2802,9 @@ async function initCSGO(credentials) {
     // Error handling
     user.on("error", (err) => {
       logger.error(`Steam user error`, err);
+      // Clear Steam Guard state on error
+      steamGuardPending = false;
+      steamGuardCallback = null;
       reject(err);
     });
 
@@ -2914,6 +3117,10 @@ function extractSteamIdFromToken(token) {
  * Terminate Steam session
  */
 async function terminateSteamSession() {
+
+  steamGuardCallback = null;
+  steamGuardPending = false;
+
   if (!user) {
     user = new SteamUser();
     csgo = new GlobalOffensive(user);
