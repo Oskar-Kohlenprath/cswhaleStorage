@@ -568,7 +568,7 @@ buildItemName(item) {
         tradeDate = new Date(item.tradable_after * 1000);
       } else {
         // Unknown format, assume tradable
-        console.warn(`Unknown tradable_after format: ${item.tradable_after}`);
+        //console.warn(`Unknown tradable_after format: ${item.tradable_after}`);
         return true;
       }
       

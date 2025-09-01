@@ -812,6 +812,281 @@ function createWindow() {
 
 
 
+// In main.js - fetch-asset-ids handler
+ipcMain.handle('fetch-asset-ids', async (event, orderId, batchIndex, itemsInBatch) => {
+  try {
+    const deviceToken = await getDeviceToken();
+    if (!deviceToken) {
+      throw new Error("Device token required");
+    }
+
+    // Build query params
+    const params = new URLSearchParams();
+    if (batchIndex !== undefined) params.append('batch_index', batchIndex);
+    if (itemsInBatch !== undefined) params.append('items_in_batch', itemsInBatch);
+    
+    const url = `${API_BASE_URL.replace('/api', '')}/getAssetIDS/${orderId}?${params}`;
+    
+    const response = await axios.get(url, {
+      headers: {
+        'Authorization': `Bearer ${deviceToken}`,  // Send as Bearer token
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to fetch asset IDs');
+    }
+
+    return response.data;
+  } catch (error) {
+    logger.error('Failed to fetch asset IDs:', error);
+    throw error;
+  }
+});
+
+
+
+// Add this handler to check trade offer status
+ipcMain.handle('check-trade-offer-status', async (event, offerId) => {
+  try {
+    if (!manager) {
+      throw new Error('Trade manager not initialized');
+    }
+
+    return new Promise((resolve, reject) => {
+      manager.getOffer(offerId, (err, offer) => {
+        if (err) {
+          logger.error(`Failed to get trade offer ${offerId}:`, err);
+          reject(err);
+        } else {
+          logger.info(`Trade offer ${offerId} status: ${offer.state} (${TradeOfferManager.ETradeOfferState[offer.state]})`);
+          resolve({
+            success: true,
+            offerId: offer.id,
+            state: offer.state,
+            stateName: TradeOfferManager.ETradeOfferState[offer.state],
+            isOurOffer: offer.isOurOffer,
+            confirmationMethod: offer.confirmationMethod
+          });
+        }
+      });
+    });
+  } catch (error) {
+    logger.error('Failed to check trade offer status:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+});
+
+// Send trade offer for an order
+// Replace the existing 'send-trade-offer' handler in main.js
+// Update the send-trade-offer handler to properly handle the trade URL
+ipcMain.handle('send-trade-offer', async (event, orderId, assetIds, tradeUrl, sellerSteamId) => {
+  try {
+    if (!sellerSteamId) {
+      throw new Error('Seller Steam ID is required');
+    }
+
+    logger.info(`Preparing to send trade for order ${orderId}, seller Steam ID: ${sellerSteamId}`);
+
+    // Check if we need to login or switch accounts
+    const currentSteamId = user && user.steamID ? user.steamID.getSteamID64() : null;
+    
+    if (currentSteamId !== sellerSteamId) {
+      logger.info(`Need to switch from ${currentSteamId} to seller account ${sellerSteamId}`);
+      
+      // Get the refresh token for this account
+      const accounts = await getAllAccounts();
+      const sellerAccount = accounts.find(a => a.steamId === sellerSteamId);
+      
+      if (!sellerAccount || !sellerAccount.refreshToken || sellerAccount.refreshToken.trim() === '') {
+        // No token found - need to login
+        logger.info(`No refresh token for ${sellerSteamId}, login required`);
+        
+        return {
+          success: false,
+          needsLogin: true,
+          sellerSteamId: sellerSteamId,
+          error: 'Login required for seller Steam account'
+        };
+      }
+      
+      // We have a token, proceed with login
+      logger.info(`Found refresh token for ${sellerSteamId}, logging in...`);
+      await terminateSteamSession();
+      await initCSGO({ refreshToken: sellerAccount.refreshToken });
+      
+      // Wait for trade manager to be ready
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          logger.error('Login timeout - trade manager not ready');
+          reject(new Error('Login timeout'));
+        }, 30000);
+        
+        const checkInterval = setInterval(() => {
+          if (manager && user && user.steamID && user.steamID.getSteamID64() === sellerSteamId) {
+            clearInterval(checkInterval);
+            clearTimeout(timeout);
+            logger.info('Trade manager ready, proceeding with trade offer');
+            resolve();
+          }
+        }, 500);
+      });
+    }
+    
+    // Now we should be logged in as the correct account
+    if (!manager) {
+      throw new Error('Trade manager not initialized after login');
+    }
+
+    logger.info(`Creating trade offer for order ${orderId} with ${assetIds.length} items`);
+    logger.info(`Trade URL: ${tradeUrl}`);
+
+    // Parse the trade URL to extract partner and token
+    let partnerSteamID;
+    let token;
+    
+    try {
+      const url = new URL(tradeUrl);
+      const params = url.searchParams;
+      
+      const partner = params.get('partner');
+      token = params.get('token');
+      
+      if (!partner || !token) {
+        throw new Error('Invalid trade URL - missing partner or token');
+      }
+      
+      // Convert partner ID to Steam ID 64
+      // Partner is the account ID (32-bit), we need to convert to 64-bit
+      const accountId = parseInt(partner);
+      // Steam ID 64 = 76561197960265728 + accountId
+      const steamId64 = '76561197960265728';
+      const base = BigInt(steamId64);
+      const partnerSteamId64 = (base + BigInt(accountId)).toString();
+      
+      logger.info(`Partner account ID: ${partner}, Steam ID 64: ${partnerSteamId64}, Token: ${token}`);
+      
+      // Create SteamID object for the partner
+      const SteamID = require('steamid');
+      partnerSteamID = new SteamID(partnerSteamId64);
+      
+    } catch (parseError) {
+      logger.error('Failed to parse trade URL:', parseError);
+      throw new Error('Invalid trade URL format');
+    }
+
+    // Create the trade offer with SteamID object and token
+    const offer = manager.createOffer(partnerSteamID, token);
+
+    // Add items to give
+    for (const assetId of assetIds) {
+      offer.addMyItem({
+        assetid: assetId,
+        appid: 730,
+        contextid: 2,
+        amount: 1
+      });
+    }
+
+    // Set message
+    offer.setMessage(`CSWhale Order #${orderId.substring(0, 8)}`);
+
+    // Send the offer
+    return new Promise((resolve, reject) => {
+      offer.send((err, status) => {
+        if (err) {
+          logger.error(`Failed to send trade offer for order ${orderId}:`, err);
+          reject(err);
+        } else {
+          logger.info(`Trade offer sent successfully! Order: ${orderId}, Offer ID: ${offer.id}`);
+          
+          // Notify Flask about the sent trade offer
+          notifyFlaskTradeOfferSent(orderId, offer.id, sellerSteamId).catch(err => {
+            logger.error('Failed to notify Flask about trade offer:', err);
+          });
+          
+          resolve({
+            success: true,
+            offerId: offer.id,
+            status: status,
+            orderId: orderId
+          });
+        }
+      });
+    });
+    
+  } catch (error) {
+    logger.error('Failed to send trade offer:', error);
+    throw error;
+  }
+});
+
+// Add new handler to get seller Steam ID for an order
+ipcMain.handle('get-order-seller-steamid', async (event, orderId) => {
+  try {
+    const deviceToken = await getDeviceToken();
+    if (!deviceToken) {
+      throw new Error("Device token required");
+    }
+
+    // Get order details from Flask to find seller's Steam ID
+    const url = `${API_BASE_URL.replace('/api', '')}/api/order/${orderId}/seller`;
+    
+    const response = await axios.get(url, {
+      headers: {
+        'Authorization': `Bearer ${deviceToken}`
+      },
+      withCredentials: true
+    });
+
+    return {
+      success: true,
+      sellerSteamId: response.data.seller_steam_id
+    };
+  } catch (error) {
+    logger.error('Failed to get seller Steam ID:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+});
+
+// Helper function to notify Flask about sent trade offer
+async function notifyFlaskTradeOfferSent(orderId, tradeOfferId) {
+  try {
+    const deviceToken = await getDeviceToken();
+    const url = `${API_BASE_URL}/trade_offer_sent`;
+    
+    await axios.post(url, {
+      device_token: deviceToken,
+      order_id: orderId,
+      trade_offer_id: tradeOfferId,
+      timestamp: new Date().toISOString()
+    });
+    
+    logger.info(`Flask notified about trade offer ${tradeOfferId} for order ${orderId}`);
+  } catch (error) {
+    logger.error('Failed to notify Flask:', error);
+  }
+}
+
+// Check if we're connected and ready to send trades
+ipcMain.handle('check-trade-readiness', async () => {
+  return {
+    connected: !!(user && user.steamID),
+    hasManager: !!manager,
+    hasCommunity: !!community,
+    steamId: user ? user.steamID.getSteamID64() : null
+  };
+});
+
+
+
 // Add this near your other IPC handlers (around line 300)
 
 // Add this near your other IPC handlers (around line 300)

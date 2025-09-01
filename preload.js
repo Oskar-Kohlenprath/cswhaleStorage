@@ -14,6 +14,32 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onQRCodeGenerated: (callback) => ipcRenderer.on('qr-code-generated', (event, url) => callback(url)),
   onQRLoginSuccess: (callback) => ipcRenderer.on('qr-login-success', (event, data) => callback(data)),
   onQRLoginFailed: (callback) => ipcRenderer.on('qr-login-failed', (event, error) => callback(error)),
+  sendTradeOffer: (orderId, assetIds, tradeUrl) => 
+  ipcRenderer.invoke('send-trade-offer', orderId, assetIds, tradeUrl),
+
+  // Add this to electronAPI exposure
+checkTradeOfferStatus: (offerId) => 
+  ipcRenderer.invoke('check-trade-offer-status', offerId),
+
+fetchAssetIds: (orderId, batchIndex, itemsInBatch) => 
+  ipcRenderer.invoke('fetch-asset-ids', orderId, batchIndex, itemsInBatch),
+
+checkTradeReadiness: () => 
+  ipcRenderer.invoke('check-trade-readiness'),
+
+onTradeOfferSent: (callback) => 
+  ipcRenderer.on('trade-offer-sent', (event, data) => callback(data)),
+
+onTradeOfferFailed: (callback) => 
+  ipcRenderer.on('trade-offer-failed', (event, error) => callback(error)),
+
+
+// Add these to the electronAPI exposure
+sendTradeOffer: (orderId, assetIds, tradeUrl, sellerSteamId) => 
+  ipcRenderer.invoke('send-trade-offer', orderId, assetIds, tradeUrl, sellerSteamId),
+
+getOrderSellerSteamId: (orderId) => 
+  ipcRenderer.invoke('get-order-seller-steamid', orderId),
   
   checkAccountToken: (steamId) => ipcRenderer.invoke('check-account-token', steamId),
   loginWithCredentials: (credentials) => ipcRenderer.invoke('login-with-credentials', credentials),
