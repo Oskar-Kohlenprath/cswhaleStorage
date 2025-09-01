@@ -1026,6 +1026,7 @@ ipcMain.handle('send-trade-offer', async (event, orderId, assetIds, tradeUrl, se
   }
 });
 
+
 async function sendTradeOffersToFlask(steamId, newOfferId, orderId) {
   try {
     logger.info(`Fetching all trade offers to send to Flask...`);
@@ -1085,18 +1086,26 @@ async function sendTradeOffersToFlask(steamId, newOfferId, orderId) {
     logger.info(`Sending trade offers to Flask: ${url}`);
     logger.info(`Payload includes ${formattedSent.length} sent and ${formattedReceived.length} received offers`);
     
+    // FIXED: Proper headers for desktop app authentication
     const response = await axios.post(url, payload, {
       headers: {
-        'Authorization': `Bearer ${deviceToken}`,
-        'X-Device-Token': deviceToken,
-        'Content-Type': 'application/json'
+        'Authorization': `Bearer ${deviceToken}`,  // Flask checks for this
+        'X-Device-Token': deviceToken,            // Backup header
+        'Content-Type': 'application/json',
+        'User-Agent': 'CSWhale-Desktop/1.0'       // Identify as desktop
       },
-      timeout: 30000
+      timeout: 30000,
+      withCredentials: true  // Include cookies if needed
     });
     
     if (response.data.status === 'success') {
       logger.info(`✅ Flask successfully processed trade offers`);
       logger.info(`Stats: ${JSON.stringify(response.data.stats)}`);
+      
+      // Schedule verification task was triggered
+      if (response.data.message && response.data.message.includes('verification')) {
+        logger.info('Trade offer verification task scheduled on server');
+      }
     } else {
       logger.warn(`Flask processing returned non-success status: ${JSON.stringify(response.data)}`);
     }
@@ -1107,6 +1116,24 @@ async function sendTradeOffersToFlask(steamId, newOfferId, orderId) {
     logger.error('Failed to send trade offers to Flask:', error);
     if (error.response) {
       logger.error(`Flask response: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
+      
+      // Special handling for authentication errors
+      if (error.response.status === 401 || error.response.status === 403) {
+        logger.error('Authentication failed - device token may be invalid or expired');
+        
+        // Try to refresh device token if needed
+        try {
+          logger.info('Attempting to refresh device token...');
+          const newToken = await ensureValidDeviceTokenEnhanced();
+          if (newToken) {
+            logger.info('Device token refreshed, retrying...');
+            // Retry once with new token
+            return await sendTradeOffersToFlask(steamId, newOfferId, orderId);
+          }
+        } catch (tokenError) {
+          logger.error('Failed to refresh device token:', tokenError);
+        }
+      }
     }
     throw error;
   }
