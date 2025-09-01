@@ -21,6 +21,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // Storage scanning with account
   scanStorageForAccount: (steamId) => ipcRenderer.invoke('scan-storage-for-account', steamId),
+
+    sendSteamGuardCode: (code) => ipcRenderer.send('steamGuard-code', code),
+  onSteamGuardRequired: (callback) => 
+    ipcRenderer.on('steamGuard-required', (event, domain) => callback(domain)),
   
   // Events
   onCredentialsRequired: (callback) => ipcRenderer.on('credentials-required', (event, data) => callback(data)),

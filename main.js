@@ -427,37 +427,155 @@ function createWindow() {
 
   // Inject custom CSS/JS after page loads to enable desktop features
   mainWindow.webContents.on('did-finish-load', () => {
-    logger.info('Flask app loaded in Electron wrapper');
+  logger.info('Flask app loaded in Electron wrapper');
+  
+  // Inject desktop app information AND Steam Guard modal
+  mainWindow.webContents.executeJavaScript(`
+    // Set global flags before any scripts run
+    window.__CSWHALE_DESKTOP__ = true;
+    window.__CSWHALE_VERSION__ = '${app.getVersion()}';
+    window.__CSWHALE_PLATFORM__ = '${process.platform}';
     
-    // Inject desktop app information
-    mainWindow.webContents.executeJavaScript(`
-        // Set global flags before any scripts run
-        window.__CSWHALE_DESKTOP__ = true;
-        window.__CSWHALE_VERSION__ = '${app.getVersion()}';
-        window.__CSWHALE_PLATFORM__ = '${process.platform}';
-        
-        // Update the global variables if they exist
-        if (typeof window.IS_DESKTOP_APP !== 'undefined') {
-            window.IS_DESKTOP_APP = true;
-            window.DESKTOP_VERSION = '${app.getVersion()}';
-            window.DESKTOP_PLATFORM = '${process.platform}';
-            
-            // Add desktop class to body
-            if (document.body) {
-                document.body.classList.add('desktop-app');
-                document.body.classList.remove('web-app');
-            }
-            
-            console.log('✅ Desktop mode activated via Electron wrapper');
+    // Update the global variables if they exist
+    if (typeof window.IS_DESKTOP_APP !== 'undefined') {
+      window.IS_DESKTOP_APP = true;
+      window.DESKTOP_VERSION = '${app.getVersion()}';
+      window.DESKTOP_PLATFORM = '${process.platform}';
+      
+      // Add desktop class to body
+      if (document.body) {
+        document.body.classList.add('desktop-app');
+        document.body.classList.remove('web-app');
+      }
+      
+      console.log('✅ Desktop mode activated via Electron wrapper');
+    }
+    
+    // Verify the API is available
+    if (window.electronAPI && window.electronAPI.isElectron) {
+      console.log('✅ Electron API is available');
+    } else {
+      console.error('❌ Electron API not found - check preload script');
+    }
+    
+    // INJECT STEAM GUARD MODAL HTML
+    if (!document.getElementById('steam-guard-modal-injected')) {
+      const modalHTML = \`
+        <div id="steam-guard-modal-injected" style="
+          position: fixed;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          background: rgba(0, 0, 0, 0.75);
+          backdrop-filter: blur(5px);
+          display: none;
+          justify-content: center;
+          align-items: center;
+          z-index: 10000;
+        ">
+          <div style="
+            background: #1e293b;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 32px;
+            border-radius: 12px;
+            width: 450px;
+            max-width: 90%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+          ">
+            <h2 style="
+              font-size: 1.5rem;
+              margin-bottom: 16px;
+              color: #f1f5f9;
+              font-weight: 700;
+            ">Steam Guard Required</h2>
+            <div style="margin-bottom: 24px;">
+              <p id="steam-guard-prompt-injected" style="
+                color: #94a3b8;
+                margin-bottom: 16px;
+              ">Enter your Steam Guard code:</p>
+              <input type="text" id="steam-guard-input-injected" 
+                placeholder="Steam Guard code"
+                style="
+                  width: 100%;
+                  padding: 12px 16px;
+                  font-size: 1rem;
+                  border-radius: 8px;
+                  background-color: #334155;
+                  border: 1px solid #475569;
+                  color: #f1f5f9;
+                  outline: none;
+                "
+                onkeypress="if(event.key === 'Enter') document.getElementById('steam-guard-submit-injected').click()">
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: 12px;">
+              <button id="steam-guard-cancel-injected" style="
+                padding: 10px 24px;
+                background: #334155;
+                color: #f1f5f9;
+                border: 1px solid #475569;
+                border-radius: 8px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.2s;
+              ">Cancel</button>
+              <button id="steam-guard-submit-injected" style="
+                padding: 10px 24px;
+                background: #3b82f6;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.2s;
+              ">Submit</button>
+            </div>
+          </div>
+        </div>
+      \`;
+      
+      document.body.insertAdjacentHTML('beforeend', modalHTML);
+      
+      // Add event listeners
+      document.getElementById('steam-guard-submit-injected').addEventListener('click', () => {
+        const code = document.getElementById('steam-guard-input-injected').value.trim();
+        if (code) {
+          console.log('Sending Steam Guard code to Electron');
+          window.electronAPI.sendSteamGuardCode(code);
+          document.getElementById('steam-guard-modal-injected').style.display = 'none';
+          document.getElementById('steam-guard-input-injected').value = '';
         }
+      });
+      
+      document.getElementById('steam-guard-cancel-injected').addEventListener('click', () => {
+        document.getElementById('steam-guard-modal-injected').style.display = 'none';
+        document.getElementById('steam-guard-input-injected').value = '';
+      });
+      
+      // Listen for Steam Guard required event
+      window.electronAPI.onSteamGuardRequired((domain) => {
+        console.log('Steam Guard required for domain:', domain);
+        const modal = document.getElementById('steam-guard-modal-injected');
+        const prompt = document.getElementById('steam-guard-prompt-injected');
         
-        // Verify the API is available
-        if (window.electronAPI && window.electronAPI.isElectron) {
-            console.log('✅ Electron API is available');
-        } else {
-            console.error('❌ Electron API not found - check preload script');
+        if (modal) {
+          prompt.textContent = domain 
+            ? \`Enter Steam Guard code for \${domain}:\`
+            : 'Enter your Steam Guard code:';
+          
+          modal.style.display = 'flex';
+          
+          // Focus the input
+          setTimeout(() => {
+            const input = document.getElementById('steam-guard-input-injected');
+            if (input) input.focus();
+          }, 100);
         }
-    `);
+      });
+      
+      console.log('✅ Steam Guard modal injected');
+    }
+  `);
 });
 
   // Handle navigation to stay within the app
@@ -532,14 +650,21 @@ function createWindow() {
 ipcMain.handle('login-with-qr', async () => {
   try {
     logger.info('QR login requested');
+    
+    // Fully terminate any existing session
     await terminateSteamSession();
     
     return new Promise((resolve, reject) => {
       // Reset the lastReceivedToken for this login session
       lastReceivedToken = null;
       
-      // Create new user and csgo instances
-      user = new SteamUser();
+      // Create new instances WITHOUT disabling data directory
+      user = new SteamUser({
+        autoRelogin: false,
+        promptSteamGuardCode: false
+        // Remove dataDirectory: null - this was causing the issue
+      });
+      
       csgo = new GlobalOffensive(user);
       
       // Initialize trade manager
@@ -553,15 +678,17 @@ ipcMain.handle('login-with-qr', async () => {
       });
       
       let qrResolved = false;
+      let qrGenerated = false;
       
       // Handle QR code generation
-      user.on('qr', (challengeUrl, qrCodeUrl) => {
+      user.on('qr', (challengeUrl) => {
         logger.info('QR code generated for login');
         logger.info(`Challenge URL: ${challengeUrl}`);
         
-        // The challengeUrl is what the user needs to visit/scan
-        // Some versions of steam-user provide the QR image directly
-        const qrUrl = qrCodeUrl || `https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=${encodeURIComponent(challengeUrl)}`;
+        qrGenerated = true;
+        
+        // Generate QR code from the challenge URL
+        const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=${encodeURIComponent(challengeUrl)}`;
         
         // Send QR code URL to renderer
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -572,13 +699,24 @@ ipcMain.handle('login-with-qr', async () => {
           qrResolved = true;
           resolve({ 
             success: true, 
-            qrUrl: qrUrl
+            qrUrl: qrUrl,
+            qrGenerated: true
           });
         }
       });
       
       // Handle successful login
       user.on("loggedOn", async () => {
+        // Only process if QR was actually generated
+        if (!qrGenerated) {
+          logger.warn('Logged on without QR generation - rejecting');
+          if (!qrResolved) {
+            qrResolved = true;
+            reject(new Error('Login occurred without QR - please try password login'));
+          }
+          return;
+        }
+        
         const steamId = user.steamID.getSteamID64();
         logger.info(`QR login successful for ${steamId}`);
         
@@ -695,16 +833,22 @@ ipcMain.handle('login-with-qr', async () => {
         logger.info("QR login: Connected to GC");
       });
       
-      // Start QR login
+      // CRITICAL FIX: Use proper QR login parameters
       logger.info('Starting QR login process...');
       user.logOn({
-        qr: true
+        qr: true,
+        anonymous: false  // Explicitly set this to false
       });
       
       // Set a timeout in case QR isn't generated
       setTimeout(() => {
         if (!qrResolved) {
           logger.error('QR generation timeout');
+          
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('qr-login-failed', 'QR code generation timeout - please try password login');
+          }
+          
           reject(new Error('QR code generation timeout'));
         }
       }, 10000);
@@ -715,6 +859,9 @@ ipcMain.handle('login-with-qr', async () => {
     throw error;
   }
 });
+
+
+
 
 ipcMain.handle('check-account-token', async (event, steamId) => {
   try {
@@ -2767,7 +2914,11 @@ function extractSteamIdFromToken(token) {
  * Terminate Steam session
  */
 async function terminateSteamSession() {
-  if (!user) return;
+  if (!user) {
+    user = new SteamUser();
+    csgo = new GlobalOffensive(user);
+    return;
+  }
   
   logger.info('Terminating existing Steam session...');
   
@@ -2775,30 +2926,33 @@ async function terminateSteamSession() {
     // Remove all event listeners
     if (user) {
       user.removeAllListeners();
+      
+      if (user.steamID) {
+        user.gamesPlayed([]);
+        user.logOff();
+      }
     }
+    
     if (csgo) {
       csgo.removeAllListeners();
     }
+    
     if (manager) {
       manager.removeAllListeners();
       manager.shutdown();
       manager = null;
     }
     
-    // Stop playing games
-    if (user.steamID) {
-      user.gamesPlayed([]);
-      user.logOff();
-      
-      // Wait for logoff
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
+    // Wait for logoff
+    await new Promise(resolve => setTimeout(resolve, 1000));
     
-    // Create new instances
-    user = new SteamUser();
+    // Create new instances with normal configuration
+    user = new SteamUser({
+      autoRelogin: false,
+      promptSteamGuardCode: false
+      // Don't set dataDirectory to null
+    });
     csgo = new GlobalOffensive(user);
-    
-    // Increase max listeners if needed
     csgo.setMaxListeners(20);
     
     lastReceivedToken = null;
