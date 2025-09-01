@@ -961,9 +961,7 @@ ipcMain.handle('send-trade-offer', async (event, orderId, assetIds, tradeUrl, se
       }
       
       // Convert partner ID to Steam ID 64
-      // Partner is the account ID (32-bit), we need to convert to 64-bit
       const accountId = parseInt(partner);
-      // Steam ID 64 = 76561197960265728 + accountId
       const steamId64 = '76561197960265728';
       const base = BigInt(steamId64);
       const partnerSteamId64 = (base + BigInt(accountId)).toString();
@@ -997,17 +995,20 @@ ipcMain.handle('send-trade-offer', async (event, orderId, assetIds, tradeUrl, se
 
     // Send the offer
     return new Promise((resolve, reject) => {
-      offer.send((err, status) => {
+      offer.send(async (err, status) => {
         if (err) {
           logger.error(`Failed to send trade offer for order ${orderId}:`, err);
           reject(err);
         } else {
           logger.info(`Trade offer sent successfully! Order: ${orderId}, Offer ID: ${offer.id}`);
           
-          // Notify Flask about the sent trade offer
-          notifyFlaskTradeOfferSent(orderId, offer.id, sellerSteamId).catch(err => {
-            logger.error('Failed to notify Flask about trade offer:', err);
-          });
+          try {
+            // After successfully sending, fetch all trade offers and send to Flask
+            await sendTradeOffersToFlask(sellerSteamId, offer.id, orderId);
+          } catch (flaskError) {
+            // Don't fail the whole operation if Flask sync fails
+            logger.error('Failed to sync trade offers with Flask:', flaskError);
+          }
           
           resolve({
             success: true,
@@ -1024,6 +1025,199 @@ ipcMain.handle('send-trade-offer', async (event, orderId, assetIds, tradeUrl, se
     throw error;
   }
 });
+
+async function sendTradeOffersToFlask(steamId, newOfferId, orderId) {
+  try {
+    logger.info(`Fetching all trade offers to send to Flask...`);
+    
+    // Fetch all trade offers using the manager
+    const offers = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Timeout fetching trade offers'));
+      }, 15000);
+      
+      manager.getOffers(
+        TradeOfferManager.EOfferFilter.All,
+        (err, sent, received) => {
+          clearTimeout(timeout);
+          if (err) {
+            reject(err);
+          } else {
+            resolve({ sent: sent || [], received: received || [] });
+          }
+        }
+      );
+    });
+    
+    // Format the trade offers like Steam API response
+    const formattedSent = offers.sent.map(offer => formatTradeOfferForFlask(offer));
+    const formattedReceived = offers.received.map(offer => formatTradeOfferForFlask(offer));
+    
+    // Build the response structure like Steam's GetTradeOffers API
+    const tradeOffersResponse = {
+      response: {
+        trade_offers_sent: formattedSent,
+        trade_offers_received: formattedReceived,
+        descriptions: extractDescriptions([...formattedSent, ...formattedReceived])
+      }
+    };
+    
+    // Get device token
+    const deviceToken = await getDeviceToken();
+    if (!deviceToken) {
+      throw new Error("Device token required for Flask sync");
+    }
+    
+    // Send to Flask's process-trade-offers endpoint
+    const url = `${API_BASE_URL}/steam/process-trade-offers`;
+    
+    const payload = {
+      trade_offers_response: tradeOffersResponse,
+      steam_id: steamId,
+      // Optional: include order context
+      context: {
+        new_offer_id: newOfferId,
+        order_id: orderId,
+        source: 'desktop_after_send'
+      }
+    };
+    
+    logger.info(`Sending trade offers to Flask: ${url}`);
+    logger.info(`Payload includes ${formattedSent.length} sent and ${formattedReceived.length} received offers`);
+    
+    const response = await axios.post(url, payload, {
+      headers: {
+        'Authorization': `Bearer ${deviceToken}`,
+        'X-Device-Token': deviceToken,
+        'Content-Type': 'application/json'
+      },
+      timeout: 30000
+    });
+    
+    if (response.data.status === 'success') {
+      logger.info(`✅ Flask successfully processed trade offers`);
+      logger.info(`Stats: ${JSON.stringify(response.data.stats)}`);
+    } else {
+      logger.warn(`Flask processing returned non-success status: ${JSON.stringify(response.data)}`);
+    }
+    
+    return response.data;
+    
+  } catch (error) {
+    logger.error('Failed to send trade offers to Flask:', error);
+    if (error.response) {
+      logger.error(`Flask response: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
+    }
+    throw error;
+  }
+}
+
+// Helper function to format trade offer for Flask (Steam API format)
+function formatTradeOfferForFlask(offer) {
+  return {
+    tradeofferid: offer.id,
+    accountid_other: offer.partner.accountid || extractAccountId(offer.partner.getSteamID64()),
+    message: offer.message || '',
+    expiration_time: Math.floor(offer.expires / 1000), // Convert to Unix timestamp
+    trade_offer_state: offer.state,
+    items_to_give: (offer.itemsToGive || []).map(item => ({
+      appid: String(item.appid || 730),
+      contextid: String(item.contextid || 2),
+      assetid: String(item.assetid),
+      classid: String(item.classid || ''),
+      instanceid: String(item.instanceid || '0'),
+      amount: String(item.amount || 1),
+      missing: false,
+      est_usd: '0'
+    })),
+    items_to_receive: (offer.itemsToReceive || []).map(item => ({
+      appid: String(item.appid || 730),
+      contextid: String(item.contextid || 2),
+      assetid: String(item.assetid),
+      classid: String(item.classid || ''),
+      instanceid: String(item.instanceid || '0'),
+      amount: String(item.amount || 1),
+      missing: false,
+      est_usd: '0'
+    })),
+    is_our_offer: offer.isOurOffer,
+    time_created: Math.floor(offer.created / 1000),
+    time_updated: Math.floor(offer.updated / 1000),
+    from_real_time_trade: false,
+    escrow_end_date: offer.escrow_end_date ? Math.floor(offer.escrow_end_date / 1000) : 0,
+    confirmation_method: offer.confirmationMethod || 0,
+    eresult: 1
+  };
+}
+
+// Helper function to extract account ID from Steam ID 64
+function extractAccountId(steamId64) {
+  const base = BigInt('76561197960265728');
+  const id64 = BigInt(steamId64);
+  return Number(id64 - base);
+}
+
+// Helper function to extract item descriptions (for Flask's descriptions field)
+function extractDescriptions(offers) {
+  const descriptions = [];
+  const seen = new Set();
+  
+  for (const offer of offers) {
+    const allItems = [
+      ...(offer.items_to_give || []),
+      ...(offer.items_to_receive || [])
+    ];
+    
+    for (const item of allItems) {
+      const key = `${item.classid}_${item.instanceid}`;
+      if (!seen.has(key) && item.classid) {
+        seen.add(key);
+        descriptions.push({
+          appid: item.appid,
+          classid: item.classid,
+          instanceid: item.instanceid || '0',
+          currency: false,
+          background_color: '',
+          icon_url: item.icon_url || '',
+          icon_url_large: item.icon_url_large || '',
+          descriptions: [],
+          tradable: 1,
+          name: item.name || '',
+          name_color: '7D6D00',
+          type: item.type || '',
+          market_name: item.market_name || item.name || '',
+          market_hash_name: item.market_hash_name || item.market_name || item.name || '',
+          market_fee_app: 730,
+          commodity: 0,
+          market_tradable_restriction: 7,
+          market_marketable_restriction: 0,
+          marketable: 1
+        });
+      }
+    }
+  }
+  
+  return descriptions;
+}
+
+// Also add a periodic sync function that can be called independently
+async function syncTradeOffersWithFlask(steamId) {
+  try {
+    if (!manager) {
+      logger.warn('Trade manager not initialized, skipping sync');
+      return;
+    }
+    
+    logger.info(`Syncing trade offers for ${steamId} with Flask...`);
+    await sendTradeOffersToFlask(steamId, null, null);
+    logger.info('Trade offers sync completed');
+  } catch (error) {
+    logger.error('Trade offers sync failed:', error);
+  }
+}
+
+// Export the sync function for use elsewhere
+module.exports.syncTradeOffersWithFlask = syncTradeOffersWithFlask;
 
 // Add new handler to get seller Steam ID for an order
 ipcMain.handle('get-order-seller-steamid', async (event, orderId) => {
