@@ -368,33 +368,36 @@ class BackgroundTradeMonitor {
         return;
       }
 
-      const payload = {
-        device_token: deviceToken,
-        timestamp: new Date().toISOString(),
-        check_interval_minutes: this.CHECK_INTERVAL_MINUTES,
-        accounts_checked: results.length,
-        results: results
-      };
+      // Send to NEW background-sync endpoint
+      for (const result of results.filter(r => r.success)) {
+        const payload = {
+          steam_id: result.steam_id,
+          response_data: {
+            response: {
+              trade_offers_sent: result.sent_offers || [],
+              trade_offers_received: result.received_offers || [],
+              descriptions: [] // Extract if needed
+            }
+          }
+        };
 
-      this.logger.info(`Sending trade data to Flask: ${this.FLASK_TRADE_ENDPOINT}`);
-      
-      const response = await axios.post(this.FLASK_TRADE_ENDPOINT, payload, {
-        timeout: 30000,
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
+        const response = await axios.post(
+          'https://cswhale-green-dust-4483.fly.dev/api/steam/background-sync', // NEW ENDPOINT
+          payload,
+          {
+            headers: {
+              'Authorization': `Bearer ${deviceToken}`,
+              'Content-Type': 'application/json'
+            },
+            timeout: 30000
+          }
+        );
 
-      this.logger.info(`Flask response: ${response.status} - ${JSON.stringify(response.data)}`);
-      return response.data;
+        this.logger.info(`Background sync response: ${response.status}`);
+      }
       
     } catch (error) {
-      if (error.response) {
-        this.logger.error(`Flask API error: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
-      } else {
-        this.logger.error('Failed to send to Flask:', error.message);
-      }
-      // Don't throw - we don't want to stop monitoring if Flask is down
+      this.logger.error('Failed to send background sync:', error.message);
     }
   }
 
