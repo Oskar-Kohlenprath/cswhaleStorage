@@ -1355,15 +1355,6 @@ async function sendTradeOffersToFlask(steamId, newOfferId, orderId) {
 }
 
 
-getAcceleratedMinutes(minutes) {
-    /**
-     * Get accelerated minutes for testing
-     * @param {number} minutes - original minutes
-     * @returns {number} - accelerated minutes
-     */
-    const factor = 0.01667; // Hardcoded: 24h -> 24min
-    return Math.max(1, Math.round(minutes * factor)); // Min 1 minute
-}
 
 
 // Helper function to format trade offer for Flask (Steam API format)
@@ -1562,9 +1553,9 @@ ipcMain.handle('login-with-qr', async () => {
         steam: user,
         community: community,
         language: 'en',
-        pollInterval: 10000,
-        cancelTime: 300000,
-        pendingCancelTime: 30000
+        pollInterval: -1,
+        cancelTime: 0,
+        pendingCancelTime: 0
       });
       
       let qrResolved = false;
@@ -1953,25 +1944,12 @@ function updateTrayMenu() {
     {
       label: '🔄 Check All Accounts Now',
       click: async () => {
-        const notification = new Notification({
-          title: 'Checking Trades',
-          body: 'Checking all accounts for trade offers...',
-          icon: path.join(__dirname, 'static/images/icons/icon.png')
-        });
-        notification.show();
+        
         
         const results = await backgroundMonitor.checkAllAccounts();
         updateTrayMenu();
         
-        const totalOffers = results.reduce((sum, r) => 
-          sum + (r.received_offers?.length || 0), 0
-        );
         
-        new Notification({
-          title: 'Check Complete',
-          body: `Found ${totalOffers} trade offers across ${results.length} accounts`,
-          icon: path.join(__dirname, 'static/images/icons/icon.png')
-        }).show();
       }
     },
     {
@@ -2017,14 +1995,6 @@ function updateTrayMenu() {
               click: () => updateCheckInterval(60)
             }
           ]
-        },
-        {
-          label: 'Notifications',
-          type: 'checkbox',
-          checked: getSettings().notificationsEnabled !== false,
-          click: (item) => {
-            saveSettings({ notificationsEnabled: item.checked });
-          }
         }
       ]
     },
@@ -2117,19 +2087,13 @@ app.whenReady().then(async () => {
     updateTrayMenu();
     
     // Show startup notification
-    if (getSettings().notificationsEnabled) {
-      new Notification({
-        title: 'CSWhale Trade Monitor',
-        body: 'Background monitoring started. Checking all accounts every 30 minutes.',
-        icon: path.join(__dirname, 'static/images/icons/icon.png')
-      }).show();
-    }
+
   } catch (err) {
     logger.error("❌ Failed to start background monitor:", err);
     
     new Notification({
       title: 'CSWhale Error',
-      body: 'Failed to start trade monitoring. Check logs for details.',
+      body: 'Failed to start trade monitoring.',
       icon: path.join(__dirname, 'static/images/icons/icon.png')
     }).show();
   }

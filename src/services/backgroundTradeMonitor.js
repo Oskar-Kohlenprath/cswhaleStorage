@@ -101,138 +101,215 @@ class BackgroundTradeMonitor {
     const startTime = Date.now();
     
     try {
-      // Get all accounts with refresh tokens
-      const accounts = await this.getAllAccounts();
-      const validAccounts = accounts.filter(acc => 
-        acc.refreshToken && acc.refreshToken.trim() !== ''
-      );
-      
-      if (validAccounts.length === 0) {
-        this.logger.warn('No accounts with refresh tokens found');
-        return [];
-      }
-      
-      this.logger.info(`Found ${validAccounts.length} accounts to check`);
-      
-      const results = [];
-      
-      // Check each account sequentially
-      for (const account of validAccounts) {
-        try {
-          this.logger.info(`Checking trades for ${account.displayName || account.steamId}...`);
-          const tradeData = await this.checkAccountTrades(account);
-          results.push(tradeData);
-          
-          // Wait 3 seconds between accounts to avoid rate limits
-          if (validAccounts.indexOf(account) < validAccounts.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 3000));
-          }
-        } catch (error) {
-          this.logger.error(`Failed to check ${account.steamId}:`, error);
-          results.push({
-            steam_id: account.steamId,
-            account_name: account.displayName || account.steamId,
-            success: false,
-            error: error.message,
-            timestamp: new Date().toISOString(),
-            received_offers: [],
-            sent_offers: []
-          });
+        // Get all accounts with refresh tokens
+        const accounts = await this.getAllAccounts();
+        const validAccounts = accounts.filter(acc => 
+            acc.refreshToken && acc.refreshToken.trim() !== ''
+        );
+        
+        if (validAccounts.length === 0) {
+            this.logger.warn('No accounts with refresh tokens found');
+            return [];
         }
-      }
-      
-      // Store results for status
-      this.lastResults = results;
-      this.lastCheckTime = new Date();
-      
-      // Send results to Flask
-      await this.sendToFlask(results);
-      
-      const elapsed = Date.now() - startTime;
-      
-      // Log summary
-      const successful = results.filter(r => r.success).length;
-      const totalReceivedOffers = results.reduce((sum, r) => 
-        sum + (r.received_offers?.length || 0), 0
-      );
-      const totalSentOffers = results.reduce((sum, r) => 
-        sum + (r.sent_offers?.length || 0), 0
-      );
-      
-      this.logger.info(`=== Trade check complete in ${elapsed}ms ===`);
-      this.logger.info(`Checked ${results.length} accounts: ${successful} successful`);
-      this.logger.info(`Found ${totalReceivedOffers} received and ${totalSentOffers} sent offers`);
-      
-      // Send notification if there are new offers
-      if (totalReceivedOffers > 0) {
-        this.sendNotification(totalReceivedOffers, results);
-      }
-      
-      return results;
-      
+        
+        this.logger.info(`Found ${validAccounts.length} accounts to check`);
+        
+        const results = [];
+        
+        // Check each account sequentially
+        for (const account of validAccounts) {
+            try {
+                this.logger.info(`Checking trades for ${account.displayName || account.steamId}...`);
+                const tradeData = await this.checkAccountTrades(account);
+                results.push(tradeData);
+                // Data already sent to Flask inside checkAccountTrades
+                
+                // Wait 3 seconds between accounts to avoid rate limits
+                if (validAccounts.indexOf(account) < validAccounts.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                }
+            } catch (error) {
+                this.logger.error(`Failed to check ${account.steamId}:`, error);
+                results.push({
+                    steam_id: account.steamId,
+                    account_name: account.displayName || account.steamId,
+                    success: false,
+                    error: error.message,
+                    timestamp: new Date().toISOString(),
+                    received_offers: [],
+                    sent_offers: []
+                });
+            }
+        }
+        
+        // Store results for status
+        this.lastResults = results;
+        this.lastCheckTime = new Date();
+        
+        // REMOVED: await this.sendToFlask(results);
+        
+        const elapsed = Date.now() - startTime;
+        
+        // Log summary
+        const successful = results.filter(r => r.success).length;
+        const totalReceivedOffers = results.reduce((sum, r) => 
+            sum + (r.received_offers?.length || 0), 0
+        );
+        const totalSentOffers = results.reduce((sum, r) => 
+            sum + (r.sent_offers?.length || 0), 0
+        );
+        
+        this.logger.info(`=== Trade check complete in ${elapsed}ms ===`);
+        this.logger.info(`Checked ${results.length} accounts: ${successful} successful`);
+        this.logger.info(`Found ${totalReceivedOffers} received and ${totalSentOffers} sent offers`);
+        
+        // Send notification if there are new offers
+        
+        
+        return results;
+        
     } catch (error) {
-      this.logger.error('Background check failed:', error);
-      return [];
+        this.logger.error('Background check failed:', error);
+        return [];
     }
-  }
+}
 
   async checkAccountTrades(account) {
-    const { steamId, refreshToken, displayName } = account;
-    
-    try {
-      // Get or create session for this account
-      let session = this.accountSessions.get(steamId);
+      const { steamId, refreshToken, displayName } = account;
       
-      if (!session || !session.user.steamID) {
-        this.logger.info(`Creating new session for ${displayName || steamId}`);
-        this.cleanupSession(steamId); // Clean up old session if exists
-        session = await this.createAccountSession(steamId, refreshToken);
-        this.accountSessions.set(steamId, session);
-      }
-      
-      // Fetch trade offers
-      const offers = await this.fetchTradeOffers(session.manager);
-      
-      // Format response
-      const tradeData = {
-        steam_id: steamId,
-        account_name: displayName || steamId,
-        success: true,
-        timestamp: new Date().toISOString(),
-        received_offers: offers.received.map(o => this.formatTradeOffer(o)),
-        sent_offers: offers.sent.map(o => this.formatTradeOffer(o))
-      };
-      
-      this.logger.info(`${displayName}: ${offers.received.length} received, ${offers.sent.length} sent`);
-      
-      return tradeData;
-      
-    } catch (error) {
-      // If session failed, try to clean up and retry once
-      if (error.message && (error.message.includes('Not Logged In') || error.message.includes('Invalid'))) {
-        this.logger.info(`Session expired for ${displayName}, creating new session...`);
-        this.cleanupSession(steamId);
-        
-        try {
-          const newSession = await this.createAccountSession(steamId, refreshToken);
-          this.accountSessions.set(steamId, newSession);
-          const offers = await this.fetchTradeOffers(newSession.manager);
+      try {
+          // Get or create session for this account
+          let session = this.accountSessions.get(steamId);
           
-          return {
-            steam_id: steamId,
-            account_name: displayName || steamId,
-            success: true,
-            timestamp: new Date().toISOString(),
-            received_offers: offers.received.map(o => this.formatTradeOffer(o)),
-            sent_offers: offers.sent.map(o => this.formatTradeOffer(o))
+          if (!session || !session.user.steamID) {
+              this.logger.info(`Creating new session for ${displayName || steamId}`);
+              this.cleanupSession(steamId); // Clean up old session if exists
+              session = await this.createAccountSession(steamId, refreshToken);
+              this.accountSessions.set(steamId, session);
+          }
+          
+          // Fetch trade offers
+          const offers = await this.fetchTradeOffers(session.manager);
+          
+          // Format response
+          const tradeData = {
+              steam_id: steamId,
+              account_name: displayName || steamId,
+              success: true,
+              timestamp: new Date().toISOString(),
+              received_offers: offers.received.map(o => this.formatTradeOffer(o)),
+              sent_offers: offers.sent.map(o => this.formatTradeOffer(o))
           };
-        } catch (retryError) {
-          throw retryError;
-        }
+          
+          this.logger.info(`${displayName}: ${offers.received.length} received, ${offers.sent.length} sent`);
+          
+          // SEND TO FLASK IMMEDIATELY IF AUTHORIZED
+          try {
+              const deviceToken = await this.getDeviceToken();
+              if (!deviceToken) {
+                  this.logger.warn('No device token available, skipping Flask sync');
+                  return tradeData;
+              }
+              
+              // Format for background-sync endpoint
+              const payload = {
+                  steam_id: steamId,
+                  response_data: {
+                      response: {
+                          trade_offers_sent: tradeData.sent_offers || [],
+                          trade_offers_received: tradeData.received_offers || [],
+                          descriptions: [] // Extract if needed
+                      }
+                  }
+              };
+              
+              const response = await axios.post(
+                  'https://cswhale-green-dust-4483.fly.dev/api/steam/background-sync',
+                  payload,
+                  {
+                      headers: {
+                          'Authorization': `Bearer ${deviceToken}`,
+                          'Content-Type': 'application/json'
+                      },
+                      timeout: 30000
+                  }
+              );
+              
+              if (response.status === 200) {
+                  this.logger.info(`Successfully sent data to Flask for ${displayName}`);
+              }
+          } catch (syncError) {
+              if (syncError.response && syncError.response.status === 403) {
+                  this.logger.warn(`Not authorized to send data for ${displayName} - likely different user's account`);
+              } else {
+                  this.logger.error(`Failed to send data to Flask for ${displayName}:`, syncError.message);
+              }
+              // Don't throw - we still have the trade data locally
+          }
+          
+          return tradeData;
+          
+      } catch (error) {
+          // If session failed, try to clean up and retry once
+          if (error.message && (error.message.includes('Not Logged In') || error.message.includes('Invalid'))) {
+              this.logger.info(`Session expired for ${displayName}, creating new session...`);
+              this.cleanupSession(steamId);
+              
+              try {
+                  const newSession = await this.createAccountSession(steamId, refreshToken);
+                  this.accountSessions.set(steamId, newSession);
+                  const offers = await this.fetchTradeOffers(newSession.manager);
+                  
+                  const tradeData = {
+                      steam_id: steamId,
+                      account_name: displayName || steamId,
+                      success: true,
+                      timestamp: new Date().toISOString(),
+                      received_offers: offers.received.map(o => this.formatTradeOffer(o)),
+                      sent_offers: offers.sent.map(o => this.formatTradeOffer(o))
+                  };
+                  
+                  // Try to send to Flask after retry too
+                  try {
+                      const deviceToken = await this.getDeviceToken();
+                      if (deviceToken) {
+                          const payload = {
+                              steam_id: steamId,
+                              response_data: {
+                                  response: {
+                                      trade_offers_sent: tradeData.sent_offers || [],
+                                      trade_offers_received: tradeData.received_offers || [],
+                                      descriptions: []
+                                  }
+                              }
+                          };
+                          
+                          await axios.post(
+                              'https://cswhale-green-dust-4483.fly.dev/api/steam/background-sync',
+                              payload,
+                              {
+                                  headers: {
+                                      'Authorization': `Bearer ${deviceToken}`,
+                                      'Content-Type': 'application/json'
+                                  },
+                                  timeout: 30000
+                              }
+                          );
+                          
+                          this.logger.info(`Successfully sent retry data to Flask for ${displayName}`);
+                      }
+                  } catch (syncError) {
+                      this.logger.warn(`Failed to sync retry data for ${displayName}:`, syncError.message);
+                  }
+                  
+                  return tradeData;
+              } catch (retryError) {
+                  throw retryError;
+              }
+          }
+          
+          throw error;
       }
-      
-      throw error;
-    }
   }
 
   async createAccountSession(steamId, refreshToken) {
@@ -307,35 +384,46 @@ class BackgroundTradeMonitor {
 
   formatTradeOffer(offer) {
     return {
-      offer_id: offer.id,
-      partner_steam_id: offer.partner.getSteamID64(),
-      state: offer.state,
-      state_name: this.getStateName(offer.state),
+      tradeofferid: offer.id,  // Also change this from offer_id
+      accountid_other: offer.partner.accountid || this.extractAccountId(offer.partner.getSteamID64()),
+      trade_offer_state: offer.state,  // Changed from just 'state'
       is_our_offer: offer.isOurOffer,
       message: offer.message || '',
-      created_at: offer.created,
-      updated_at: offer.updated,
-      expires_at: offer.expires,
-      trade_id: offer.tradeID || null,
+      time_created: Math.floor(offer.created / 1000),  // Convert ms to seconds
+      time_updated: Math.floor(offer.updated / 1000),  // Convert ms to seconds
+      expiration_time: Math.floor(offer.expires / 1000),  // Convert ms to seconds
+      from_real_time_trade: false,
+      escrow_end_date: offer.escrow_end_date ? Math.floor(offer.escrow_end_date / 1000) : 0,
+      confirmation_method: offer.confirmationMethod || 0,
+      eresult: 1,
       items_to_give: (offer.itemsToGive || []).map(item => ({
-        assetid: item.assetid,
-        appid: item.appid,
-        contextid: item.contextid,
-        amount: item.amount || 1,
-        name: item.name || '',
-        market_name: item.market_name || '',
-        market_hash_name: item.market_hash_name || ''
+        appid: String(item.appid || 730),
+        contextid: String(item.contextid || 2),
+        assetid: String(item.assetid),
+        classid: String(item.classid || ''),
+        instanceid: String(item.instanceid || '0'),
+        amount: String(item.amount || 1),
+        missing: false,
+        est_usd: '0'
       })),
       items_to_receive: (offer.itemsToReceive || []).map(item => ({
-        assetid: item.assetid,
-        appid: item.appid,
-        contextid: item.contextid,
-        amount: item.amount || 1,
-        name: item.name || '',
-        market_name: item.market_name || '',
-        market_hash_name: item.market_hash_name || ''
+        appid: String(item.appid || 730),
+        contextid: String(item.contextid || 2),
+        assetid: String(item.assetid),
+        classid: String(item.classid || ''),
+        instanceid: String(item.instanceid || '0'),
+        amount: String(item.amount || 1),
+        missing: false,
+        est_usd: '0'
       }))
     };
+  }
+
+  // Add this helper method to the class
+  extractAccountId(steamId64) {
+    const base = BigInt('76561197960265728');
+    const id64 = BigInt(steamId64);
+    return Number(id64 - base);
   }
 
   getStateName(state) {
