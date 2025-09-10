@@ -321,7 +321,7 @@ class BackgroundTradeMonitor {
         community: community,
         language: 'en',
         pollInterval: -1, // Disable auto-polling
-        cancelTime: 300000
+        cancelTime: 0
       });
 
       const timeout = setTimeout(() => {

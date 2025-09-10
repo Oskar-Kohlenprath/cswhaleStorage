@@ -3308,8 +3308,8 @@ async function initCSGO(credentials) {
       community: community,
       language: 'en',
       pollInterval: 10000, // Check for trade updates every 10 seconds
-      cancelTime: 300000,  // Cancel outgoing offers after 5 minutes
-      pendingCancelTime: 30000 // Cancel offers pending confirmation after 30 seconds
+      cancelTime: 0,  // Cancel outgoing offers after 5 minutes
+      pendingCancelTime: 0 // Cancel offers pending confirmation after 30 seconds
     });
 
     // Simple token capture without immediate saving
