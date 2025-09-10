@@ -5,7 +5,19 @@ const TradeOfferManager = require('steam-tradeoffer-manager');
 const GlobalOffensive = require('globaloffensive');
 const axios = require('axios');
 
+
+
 class BackgroundTradeMonitor {
+
+  getAcceleratedMinutes(minutes) {
+    /**
+     * Get accelerated minutes for testing
+     * @param {number} minutes - original minutes
+     * @returns {number} - accelerated minutes
+     */
+    const factor = 0.01667; // Hardcoded: 24h -> 24min
+    return Math.max(1, Math.round(minutes * factor)); // Min 1 minute
+}
   constructor(logger, keytar, serviceName) {
     this.logger = logger;
     this.keytar = keytar;
@@ -19,7 +31,9 @@ class BackgroundTradeMonitor {
     // Configuration
     this.FLASK_TRADE_ENDPOINT = process.env.FLASK_TRADE_ENDPOINT || 
       "https://cswhale-green-dust-4483.fly.dev/api/trade_offers_update";
-    this.CHECK_INTERVAL_MINUTES = process.env.CHECK_INTERVAL_MINUTES || 30;
+    this.CHECK_INTERVAL_MINUTES = this.getAcceleratedMinutes(
+      process.env.CHECK_INTERVAL_MINUTES || 30
+    );
     this.DEVICE_TOKEN_KEY = "cs-assets-device-token";
     this.ACCOUNTS_KEY = "cs-assets-stored-accounts";
   }

@@ -1354,6 +1354,18 @@ async function sendTradeOffersToFlask(steamId, newOfferId, orderId) {
   }
 }
 
+
+getAcceleratedMinutes(minutes) {
+    /**
+     * Get accelerated minutes for testing
+     * @param {number} minutes - original minutes
+     * @returns {number} - accelerated minutes
+     */
+    const factor = 0.01667; // Hardcoded: 24h -> 24min
+    return Math.max(1, Math.round(minutes * factor)); // Min 1 minute
+}
+
+
 // Helper function to format trade offer for Flask (Steam API format)
 function formatTradeOfferForFlask(offer) {
   return {
