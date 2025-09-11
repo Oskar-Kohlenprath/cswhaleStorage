@@ -158,77 +158,95 @@ const logger = new Logger();
 
 
 
-
 autoUpdater.forceDevUpdateConfig = true;  // Bypass signature verification
-autoUpdater.autoDownload = false;         // Let users choose when to download
-autoUpdater.autoInstallOnAppQuit = false; // Let users choose when to install
+autoUpdater.autoDownload = true;          // ✅ Automatically download updates
+autoUpdater.autoInstallOnAppQuit = true;  // ✅ Automatically install on quit
+
+
+
 
 
 autoUpdater.on('checking-for-update', () => {
-    logger.info('Checking for update...');
-    logger.info(`Current app version: ${app.getVersion()}`);
-    if (mainWindow) {
-        mainWindow.webContents.send('update-status', 'Checking for updates...');
-    }
+    logger.info('Checking for updates on startup...');
 });
-
 
 
 
 
 autoUpdater.on('update-available', (info) => {
-    logger.info(`Update available: version ${info.version}`);
-    logger.info(`Release date: ${info.releaseDate}`);
-    logger.info(`Release notes: ${info.releaseNotes}`);
+    logger.info(`Update available: version ${info.version} - downloading automatically`);
     
+    // Show notification in Flask UI if window exists
     if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('update-available', {
-            version: info.version,
-            releaseNotes: info.releaseNotes
-        });
+        mainWindow.webContents.executeJavaScript(`
+            // Create or update notification banner
+            let banner = document.getElementById('update-banner');
+            if (!banner) {
+                banner = document.createElement('div');
+                banner.id = 'update-banner';
+                banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:linear-gradient(90deg,#3b82f6,#8b5cf6);color:white;padding:12px;text-align:center;z-index:9999;font-weight:600;';
+                document.body.appendChild(banner);
+            }
+            banner.textContent = 'Downloading update v${info.version} - will install when app closes';
+        `);
     }
 });
 
-autoUpdater.on('update-not-available', (info) => {
-    logger.info('No update available');
-    logger.info(`Current version ${app.getVersion()} is the latest`);
+autoUpdater.on('update-not-available', () => {
+    logger.info('App is up to date');
 });
 
-
 autoUpdater.on('download-progress', (progressObj) => {
-    logger.info(`Download progress: ${Math.round(progressObj.percent)}% (${progressObj.transferred}/${progressObj.total} bytes)`);
+    const percent = Math.round(progressObj.percent);
+    logger.info(`Download progress: ${percent}%`);
     
+    // Update Flask UI if window exists
     if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('download-progress', {
-            percent: progressObj.percent,
-            transferred: progressObj.transferred,
-            total: progressObj.total
-        });
+        mainWindow.webContents.executeJavaScript(`
+            let banner = document.getElementById('update-banner');
+            if (banner) {
+                banner.textContent = 'Downloading update: ${percent}%';
+            }
+        `);
     }
 });
 
 autoUpdater.on('update-downloaded', (info) => {
-    logger.info(`Update downloaded: version ${info.version}`);
-    logger.info('Update is ready to install');
+    logger.info(`Update downloaded: version ${info.version} - will install on app quit`);
     
+    // Update Flask UI
     if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('update-downloaded', {
-            version: info.version
-        });
+        mainWindow.webContents.executeJavaScript(`
+            let banner = document.getElementById('update-banner');
+            if (banner) {
+                banner.style.background = 'linear-gradient(90deg,#10b981,#059669)';
+                banner.textContent = '✅ Update ready! Will install when you close the app.';
+                setTimeout(() => {
+                    banner.style.display = 'none';
+                }, 10000); // Hide after 10 seconds
+            }
+        `);
+    }
+    
+    // System notification
+    const { Notification } = require('electron');
+    if (Notification.isSupported()) {
+        new Notification({
+            title: 'CSWhale Update Ready',
+            body: `Version ${info.version} will install when you close the app`,
+            icon: path.join(__dirname, 'static/images/icons/icon.png')
+        }).show();
     }
 });
-
-
 
 autoUpdater.on('error', (err) => {
     logger.error('Auto-updater error:', err);
-    logger.error(`Error message: ${err.message}`);
-    logger.error(`Error stack: ${err.stack}`);
-    
-    if (mainWindow) {
-        mainWindow.webContents.send('update-error', err.message);
-    }
+    // Silent fail - don't bother the user
 });
+
+
+
+
 
 
 
@@ -989,28 +1007,53 @@ ipcMain.handle('fetch-asset-ids', async (event, orderId, batchIndex, itemsInBatc
     
     const url = `${API_BASE_URL.replace('/api', '')}/getAssetIDS/${orderId}?${params}`;
     
-    const response = await axios.get(url, {
-      headers: {
-        'Authorization': `Bearer ${deviceToken}`,
-        'Content-Type': 'application/json'
+    try {
+      const response = await axios.get(url, {
+        headers: {
+          'Authorization': `Bearer ${deviceToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!response.data.success) {
+        throw new Error(response.data.error || 'Failed to fetch asset IDs');
       }
-    });
 
-    if (!response.data.success) {
-      throw new Error(response.data.error || 'Failed to fetch asset IDs');
+      return response.data;
+    } catch (error) {
+      // Handle 409 status specifically - it contains useful error info
+      if (error.response && error.response.status === 409) {
+        logger.info(`Insufficient items: ${JSON.stringify(error.response.data)}`);
+        return {
+          success: false,
+          error: error.response.data.error || 'Insufficient items in inventory',
+          needsStorage: true,  // Flag to indicate storage move needed
+          status: 409
+        };
+      }
+      
+      // Re-throw other errors
+      throw error;
     }
-
-    return response.data;
   };
 
   try {
     return await withDeviceTokenRetry(apiCall);
   } catch (error) {
     logger.error('Failed to fetch asset IDs:', error);
+    
+    // If it's an axios error with response, extract the data
+    if (error.response) {
+      return {
+        success: false,
+        error: error.response.data?.error || error.message,
+        status: error.response.status
+      };
+    }
+    
     throw error;
   }
 });
-
 
 
 // Add this handler to check trade offer status
@@ -2683,17 +2726,58 @@ ipcMain.handle('login-with-refresh-token', async (event, steamId) => {
 /**
  * Handle moving items from storage
  */
+// Replace the existing 'move-items-from-storage' handler in main.js
 ipcMain.handle('move-items-from-storage', async (_event, payload) => {
-  const apiCall = async () => {
-    await performMoves(payload);
-    return { success: true };
-  };
-
   try {
+    // Check if we have an active Steam session
+    if (!user || !user.steamID) {
+      logger.info('No active Steam session for move-items-from-storage');
+      
+      // We need to get the Steam ID from the payload or context
+      // The payload should contain information about which account's items we're moving
+      // For now, get the first account with a token
+      const accounts = await getAllAccounts();
+      const accountWithToken = accounts.find(a => a.refreshToken && a.refreshToken.trim() !== '');
+      
+      if (!accountWithToken) {
+        logger.error('No account with refresh token available for login');
+        return { success: false, error: 'No Steam account available. Please login first.' };
+      }
+      
+      logger.info(`Logging in as ${accountWithToken.steamId} to move items`);
+      
+      // Terminate any existing session and login
+      await terminateSteamSession();
+      await initCSGO({ refreshToken: accountWithToken.refreshToken });
+      
+      // Wait for connection
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Steam connection timeout'));
+        }, 15000);
+        
+        const checkInterval = setInterval(() => {
+          if (user && user.steamID && csgo && csgo.haveGCSession) {
+            clearInterval(checkInterval);
+            clearTimeout(timeout);
+            resolve();
+          }
+        }, 500);
+      });
+      
+      logger.info('Steam session established, proceeding with move');
+    }
+    
+    // Now we should have a valid session
+    const apiCall = async () => {
+      await performMoves(payload);
+      return { success: true };
+    };
+
     return await withDeviceTokenRetry(apiCall);
   } catch (err) {
     logger.error("Move items operation failed", err);
-    return { success: false, error: "Failed to move items. Please try again." };
+    return { success: false, error: err.message || "Failed to move items. Please try again." };
   }
 });
 
@@ -4209,6 +4293,41 @@ async function promptUserFor2FACodeInRenderer() {
     }
   });
 }
+
+
+
+// Add this handler in main.js
+// Add this IPC handler in main.js
+ipcMain.handle('check-inventory-needs', async (event, steamId) => {
+  const apiCall = async () => {
+    const deviceToken = await getDeviceToken();
+    const url = `${API_BASE_URL}/inventory_needs/${steamId}`;
+    
+    const { data } = await axios.post(url, { 
+      device_token: deviceToken
+    }, {
+      headers: {
+        'Authorization': `Bearer ${deviceToken}`,
+        'Content-Type': 'application/json'
+      },
+      withCredentials: true
+    });
+
+    if (!data.success) {
+      throw new Error(data.error || "Unknown error");
+    }
+
+    return data;
+  };
+
+  try {
+    return await withDeviceTokenRetry(apiCall);
+  } catch (error) {
+    logger.error('Failed to check inventory needs:', error);
+    return { success: false, error: error.message };
+  }
+});
+
 
 /**
  * Check inventory needs from Flask

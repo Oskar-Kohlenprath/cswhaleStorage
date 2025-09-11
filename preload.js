@@ -55,6 +55,8 @@ getOrderSellerSteamId: (orderId) =>
   // Events
   onCredentialsRequired: (callback) => ipcRenderer.on('credentials-required', (event, data) => callback(data)),
 
+    // Add this to the electronAPI exposure in preload.js
+  checkInventoryNeeds: (steamId) => ipcRenderer.invoke('check-inventory-needs', steamId),
 
   // Use existing login handler
   steamLoginWithToken: (steamId) => ipcRenderer.invoke('login-with-refresh-token', steamId),
