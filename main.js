@@ -12,7 +12,6 @@ const SteamCommunity = require("steamcommunity");
 const axios = require("axios");
 const keytar = require("keytar");
 const jwt_decode = require("jwt-decode");
-const { autoUpdater } = require("electron-updater");
 const TradeOfferManager = require('steam-tradeoffer-manager');
 
 const ItemEnricher = require('./src/enrichment/itemEnricher');
@@ -158,94 +157,159 @@ const logger = new Logger();
 
 
 
-autoUpdater.forceDevUpdateConfig = true;  // Bypass signature verification
-autoUpdater.autoDownload = true;          // ✅ Automatically download updates
-autoUpdater.autoInstallOnAppQuit = true;  // ✅ Automatically install on quit
 
 
 
+// ============= AUTO-UPDATER CONFIGURATION =============
+const { autoUpdater } = require("electron-updater");
 
+// Configure auto-updater for fully automatic updates
+autoUpdater.logger = logger;
+autoUpdater.autoDownload = true;
+autoUpdater.autoInstallOnAppQuit = true;
+autoUpdater.autoRunAppAfterInstall = true;
 
+// Force check even in development (for testing)
+if (!app.isPackaged) {
+  autoUpdater.forceDevUpdateConfig = true;
+}
+
+// Check for updates immediately when app starts
+function checkForUpdates() {
+  logger.info('=== Checking for updates ===');
+  autoUpdater.checkForUpdatesAndNotify().catch(err => {
+    logger.error('Update check failed:', err);
+  });
+}
+
+// Set up auto-updater events
 autoUpdater.on('checking-for-update', () => {
-    logger.info('Checking for updates on startup...');
+  logger.info('Checking for updates...');
 });
 
-
-
-
 autoUpdater.on('update-available', (info) => {
-    logger.info(`Update available: version ${info.version} - downloading automatically`);
-    
-    // Show notification in Flask UI if window exists
-    if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.executeJavaScript(`
-            // Create or update notification banner
-            let banner = document.getElementById('update-banner');
-            if (!banner) {
-                banner = document.createElement('div');
-                banner.id = 'update-banner';
-                banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:linear-gradient(90deg,#3b82f6,#8b5cf6);color:white;padding:12px;text-align:center;z-index:9999;font-weight:600;';
-                document.body.appendChild(banner);
-            }
-            banner.textContent = 'Downloading update v${info.version} - will install when app closes';
-        `);
-    }
+  logger.info(`Update available: version ${info.version}`);
+  logger.info('Update will be downloaded automatically in background');
+  
+  // Inject notification into Flask UI
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.executeJavaScript(`
+      (function() {
+        // Remove any existing update banner
+        const existingBanner = document.getElementById('cswhale-update-banner');
+        if (existingBanner) existingBanner.remove();
+        
+        // Create update banner
+        const banner = document.createElement('div');
+        banner.id = 'cswhale-update-banner';
+        banner.style.cssText = \`
+          position: fixed;
+          bottom: 0;
+          left: 0;
+          right: 0;
+          background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+          color: white;
+          padding: 12px;
+          text-align: center;
+          z-index: 999999;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          font-size: 14px;
+          font-weight: 600;
+          box-shadow: 0 -2px 10px rgba(0,0,0,0.3);
+        \`;
+        banner.textContent = 'New version ${info.version} is downloading...';
+        document.body.appendChild(banner);
+      })();
+    `).catch(err => logger.error('Failed to show update banner:', err));
+  }
 });
 
 autoUpdater.on('update-not-available', () => {
-    logger.info('App is up to date');
+  logger.info('App is up to date');
 });
 
 autoUpdater.on('download-progress', (progressObj) => {
-    const percent = Math.round(progressObj.percent);
-    logger.info(`Download progress: ${percent}%`);
-    
-    // Update Flask UI if window exists
-    if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.executeJavaScript(`
-            let banner = document.getElementById('update-banner');
-            if (banner) {
-                banner.textContent = 'Downloading update: ${percent}%';
-            }
-        `);
-    }
+  const percent = Math.round(progressObj.percent);
+  const downloaded = Math.round(progressObj.transferred / 1048576); // Convert to MB
+  const total = Math.round(progressObj.total / 1048576); // Convert to MB
+  
+  logger.info(`Download progress: ${percent}% (${downloaded}MB / ${total}MB)`);
+  
+  // Update progress in Flask UI
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.executeJavaScript(`
+      (function() {
+        const banner = document.getElementById('cswhale-update-banner');
+        if (banner) {
+          banner.textContent = 'Downloading update: ${percent}% (${downloaded}MB / ${total}MB)';
+        }
+      })();
+    `).catch(err => logger.error('Failed to update progress:', err));
+  }
 });
 
 autoUpdater.on('update-downloaded', (info) => {
-    logger.info(`Update downloaded: version ${info.version} - will install on app quit`);
-    
-    // Update Flask UI
-    if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.executeJavaScript(`
-            let banner = document.getElementById('update-banner');
-            if (banner) {
-                banner.style.background = 'linear-gradient(90deg,#10b981,#059669)';
-                banner.textContent = '✅ Update ready! Will install when you close the app.';
-                setTimeout(() => {
-                    banner.style.display = 'none';
-                }, 10000); // Hide after 10 seconds
+  logger.info(`Update downloaded: version ${info.version}`);
+  logger.info('Update will be installed automatically in 5 seconds...');
+  
+  // Show countdown in Flask UI
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.executeJavaScript(`
+      (function() {
+        const banner = document.getElementById('cswhale-update-banner');
+        if (banner) {
+          banner.style.background = 'linear-gradient(90deg, #10b981, #059669)';
+          let countdown = 5;
+          const updateCountdown = () => {
+            banner.textContent = \`Update ready! Restarting in \${countdown} seconds...\`;
+            countdown--;
+            if (countdown >= 0) {
+              setTimeout(updateCountdown, 1000);
             }
-        `);
-    }
-    
-    // System notification
-    const { Notification } = require('electron');
-    if (Notification.isSupported()) {
-        new Notification({
-            title: 'CSWhale Update Ready',
-            body: `Version ${info.version} will install when you close the app`,
-            icon: path.join(__dirname, 'static/images/icons/icon.png')
-        }).show();
-    }
+          };
+          updateCountdown();
+        }
+      })();
+    `).catch(err => logger.error('Failed to show countdown:', err));
+  }
+  
+  // System notification
+  const { Notification } = require('electron');
+  if (Notification.isSupported()) {
+    const notification = new Notification({
+      title: 'CSWhale Update Ready',
+      body: `Version ${info.version} will be installed in 5 seconds`,
+      icon: path.join(__dirname, 'static/images/icons/icon.png')
+    });
+    notification.show();
+  }
+  
+  // Force quit and install after 5 seconds
+  setTimeout(() => {
+    logger.info('Installing update now...');
+    setImmediate(() => {
+      app.removeAllListeners("before-quit");
+      autoUpdater.quitAndInstall(false, true);
+    });
+  }, 5000);
 });
 
 autoUpdater.on('error', (err) => {
-    logger.error('Auto-updater error:', err);
-    // Silent fail - don't bother the user
+  logger.error('Auto-updater error:', err);
+  logger.error('Error details:', err.stack || err.toString());
+  
+  // Remove update banner on error
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.executeJavaScript(`
+      (function() {
+        const banner = document.getElementById('cswhale-update-banner');
+        if (banner) banner.remove();
+      })();
+    `).catch(() => {});
+  }
 });
 
-
-
+// ============= END AUTO-UPDATER CONFIGURATION =============
 
 
 
@@ -2169,8 +2233,21 @@ function saveSettings(updates) {
  */
 app.whenReady().then(async () => {
   logger.info("=== CSWhale Background Service Starting ===");
+
+
+
+  // CHECK FOR UPDATES FIRST
+  setTimeout(() => {
+    checkForUpdates();
+  }, 2000); // Check 2 seconds after startup
   
-  // Create system tray immediately
+  // Set up periodic update checks (every 30 minutes)
+  setInterval(() => {
+    checkForUpdates();
+  }, 30 * 60 * 1000);
+ 
+
+
   createTray();
   logger.info("System tray created");
   
@@ -2478,18 +2555,6 @@ function setupTradeOfferListeners() {
 
 
 
-// IPC handlers for updater
-ipcMain.handle('download-update', async () => {
-  try {
-    await autoUpdater.downloadUpdate();
-    return { success: true };
-  } catch (error) {
-    logger.error('Failed to download update:', error);
-    return { success: false, error: error.message };
-  }
-});
-
-
 // Add IPC handler for device token expiry notification
 ipcMain.handle('refresh-device-token', async () => {
   try {
@@ -2513,19 +2578,6 @@ ipcMain.handle('refresh-device-token', async () => {
 });
 
 
-ipcMain.handle('install-update', async () => {
-  autoUpdater.quitAndInstall();
-});
-
-ipcMain.handle('check-for-updates', async () => {
-  try {
-    const result = await autoUpdater.checkForUpdates();
-    return { success: true, updateInfo: result?.updateInfo };
-  } catch (error) {
-    logger.error('Failed to check for updates:', error);
-    return { success: false, error: error.message };
-  }
-});
 
 
 
