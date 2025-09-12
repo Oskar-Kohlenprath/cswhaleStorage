@@ -53,7 +53,7 @@
   },
   "build": {
     "appId": "com.cswhale.inventory-verifier",
-    "productName": "cswhale-Inventory-Verifier",
+    "productName": "CSWhale Desktop",
     "copyright": "Copyright © 2024 cswhale",
     "directories": {
       "output": "dist"

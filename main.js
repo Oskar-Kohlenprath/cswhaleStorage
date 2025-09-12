@@ -1090,9 +1090,65 @@ ipcMain.handle('check-trade-offer-status', async (event, offerId) => {
   }
 });
 
-// Send trade offer for an order
-// Replace the existing 'send-trade-offer' handler in main.js
-// Update the send-trade-offer handler to properly handle the trade URL
+
+
+ipcMain.handle('ensure-correct-steam-session', async (event, requiredSteamId) => {
+  try {
+    const currentSteamId = user && user.steamID ? user.steamID.getSteamID64() : null;
+    
+    // Already on correct account
+    if (currentSteamId === requiredSteamId) {
+      logger.info(`Already logged in as ${requiredSteamId}`);
+      return { success: true };
+    }
+    
+    // Need to switch or login
+    logger.info(`Need to switch from ${currentSteamId} to ${requiredSteamId}`);
+    
+    const accounts = await getAllAccounts();
+    const targetAccount = accounts.find(a => a.steamId === requiredSteamId);
+    
+    if (!targetAccount || !targetAccount.refreshToken || targetAccount.refreshToken.trim() === '') {
+      logger.info(`No refresh token for ${requiredSteamId}, login required`);
+      return { 
+        success: false, 
+        needsLogin: true,
+        error: 'Login required for seller account'
+      };
+    }
+    
+    // Switch to the target account
+    await terminateSteamSession();
+    await initCSGO({ refreshToken: targetAccount.refreshToken });
+    
+    // Wait for connection
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Connection timeout'));
+      }, 30000);
+      
+      const checkInterval = setInterval(() => {
+        if (user && user.steamID && user.steamID.getSteamID64() === requiredSteamId && csgo && csgo.haveGCSession) {
+          clearInterval(checkInterval);
+          clearTimeout(timeout);
+          resolve();
+        }
+      }, 500);
+    });
+    
+    logger.info(`Successfully switched to ${requiredSteamId}`);
+    return { success: true };
+    
+  } catch (error) {
+    logger.error('Failed to ensure correct Steam session:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+
+
+
+
 ipcMain.handle('send-trade-offer', async (event, orderId, assetIds, tradeUrl, sellerSteamId) => {
   try {
     if (!sellerSteamId) {
@@ -1101,18 +1157,18 @@ ipcMain.handle('send-trade-offer', async (event, orderId, assetIds, tradeUrl, se
 
     logger.info(`Preparing to send trade for order ${orderId}, seller Steam ID: ${sellerSteamId}`);
 
-    // Check if we need to login or switch accounts
+    
     const currentSteamId = user && user.steamID ? user.steamID.getSteamID64() : null;
     
     if (currentSteamId !== sellerSteamId) {
       logger.info(`Need to switch from ${currentSteamId} to seller account ${sellerSteamId}`);
       
-      // Get the refresh token for this account
+     
       const accounts = await getAllAccounts();
       const sellerAccount = accounts.find(a => a.steamId === sellerSteamId);
       
       if (!sellerAccount || !sellerAccount.refreshToken || sellerAccount.refreshToken.trim() === '') {
-        // No token found - need to login
+       
         logger.info(`No refresh token for ${sellerSteamId}, login required`);
         
         return {
@@ -2726,7 +2782,7 @@ ipcMain.handle('login-with-refresh-token', async (event, steamId) => {
 /**
  * Handle moving items from storage
  */
-// Replace the existing 'move-items-from-storage' handler in main.js
+
 ipcMain.handle('move-items-from-storage', async (_event, payload) => {
   try {
     // Check if we have an active Steam session
@@ -3840,7 +3896,7 @@ async function fetchCasketContents(casketId, retries = 3) {
       return await new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
           reject(new Error(`Loading casket contents timed out (attempt ${attempt})`));
-        }, 5000);  // 5 second timeout
+        }, 10000);  // 5 second timeout
         
         csgo.getCasketContents(casketId, (err, items) => {
           clearTimeout(timeout);
@@ -4781,7 +4837,7 @@ async function fetchCasketContentsWithRetry(casketId, retries = 3) {
       return await new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
           reject(new Error(`Timeout (attempt ${attempt}/${retries})`));
-        }, 5000);
+        }, 10000);
         
         csgo.getCasketContents(casketId, (err, items) => {
           clearTimeout(timeout);

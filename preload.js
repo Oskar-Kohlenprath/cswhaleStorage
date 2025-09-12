@@ -146,6 +146,8 @@ onSetAutoScanPending: (callback) => ipcRenderer.on('set-auto-scan-pending', call
   onUpdateAvailable: (callback) => ipcRenderer.on('update-available', (event, info) => callback(info)),
   onDownloadProgress: (callback) => ipcRenderer.on('download-progress', (event, progress) => callback(progress)),
   onUpdateDownloaded: (callback) => ipcRenderer.on('update-downloaded', (event, info) => callback(info)),
+
+  ensureCorrectSteamSession: (steamId) => ipcRenderer.invoke('ensure-correct-steam-session', steamId),
 });
 
 
