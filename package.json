@@ -134,7 +134,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "deleteAppDataOnUninstall": true,
-      "artifactName": "${productName}-Setup-${version}.${ext}"
+      "artifactName": "CSWhale-Desktop-Setup-${version}.${ext}"
     },
     "dmg": {
       "artifactName": "${productName}-${version}.${ext}",
