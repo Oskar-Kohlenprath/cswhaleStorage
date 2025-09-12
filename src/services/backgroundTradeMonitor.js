@@ -15,7 +15,7 @@ class BackgroundTradeMonitor {
      * @param {number} minutes - original minutes
      * @returns {number} - accelerated minutes
      */
-    const factor = 0.01667; // Hardcoded: 24h -> 24min
+    const factor = 0.1; // Hardcoded: 24h -> 24min
     return Math.max(1, Math.round(minutes * factor)); // Min 1 minute
 }
   constructor(logger, keytar, serviceName) {
