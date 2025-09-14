@@ -1746,21 +1746,34 @@ ipcMain.handle('login-with-qr', async () => {
           // Track if we need to handle 2FA
           let had2FA = false;
           
-          // Handle device token
+
           let dt = await getDeviceToken();
           if (!dt) {
             try {
               logger.info('No device token, starting 2FA flow...');
               had2FA = true;
               
-              // Before starting 2FA, notify Flask that we're in 2FA flow
+              // IMPORTANT: Hide the Steam credentials modal BEFORE showing 2FA
               if (mainWindow && !mainWindow.isDestroyed()) {
                 await mainWindow.webContents.executeJavaScript(`
-                  console.log('Entering 2FA flow, QR login pending...');
-                  // Keep the loading state
+                  console.log('Entering 2FA flow after QR login, hiding credentials modal...');
+                  
+                  // Hide the Steam credentials modal immediately
+                  const steamModal = document.getElementById('steam-credentials-modal');
+                  if (steamModal) {
+                    steamModal.style.display = 'none';
+                    console.log('Steam credentials modal hidden before 2FA');
+                  }
+                  
+                  // Update QR display to show 2FA pending
                   const qrDisplay = document.getElementById('qr-display');
                   if (qrDisplay) {
                     qrDisplay.innerHTML = '<div class="qr-status"><div class="status-spinner"></div><span>Completing 2FA verification...</span></div>';
+                  }
+                  
+                  // Show a temporary success message
+                  if (window.showFlashMessage) {
+                    window.showFlashMessage('info', 'QR login successful! Please complete email verification...');
                   }
                 `);
               }
