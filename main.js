@@ -2300,7 +2300,24 @@ app.whenReady().then(async () => {
   logger.info("=== CSWhale Background Service Starting ===");
 
 
+    // AUTO-START: Enable by default on first run (Windows only)
+  if (process.platform === 'win32') {
+    const settings = getSettings();
+    
+    // If we haven't set the default yet, enable auto-start
+    if (settings.autoStartDefault === undefined) {
+      app.setLoginItemSettings({
+        openAtLogin: true,
+        openAsHidden: true,
+        args: ['--background']
+      });
+      
+      saveSettings({ autoStartDefault: true });
+      logger.info("Auto-start enabled by default");
+    }
+  }
 
+  
   // CHECK FOR UPDATES FIRST
   setTimeout(() => {
     checkForUpdates();
@@ -2311,6 +2328,9 @@ app.whenReady().then(async () => {
     checkForUpdates();
   }, 30 * 60 * 1000);
  
+
+
+
 
 
   createTray();
