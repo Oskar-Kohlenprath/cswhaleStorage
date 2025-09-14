@@ -2340,10 +2340,10 @@ app.whenReady().then(async () => {
   createTray();
   logger.info("System tray created");
   
-  // Initialize Steam community (needed for trade manager)
+
   community = new SteamCommunity();
   
-  // Initialize background monitor and start it
+
   backgroundMonitor = new BackgroundTradeMonitor(logger, keytar, SERVICE_NAME);
 
 try {
@@ -2351,7 +2351,7 @@ try {
   logger.info("✅ Background trade monitor started successfully");
   updateTrayMenu();
   
-  // POWER MONITOR: Check trades when PC wakes from sleep
+
   powerMonitor.on('resume', () => {
     logger.info('System resumed from standby/sleep');
     
