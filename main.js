@@ -13,6 +13,7 @@ const axios = require("axios");
 const keytar = require("keytar");
 const jwt_decode = require("jwt-decode");
 const TradeOfferManager = require('steam-tradeoffer-manager');
+const { LoginSession, EAuthTokenPlatformType } = require('steam-session');
 
 const ItemEnricher = require('./src/enrichment/itemEnricher');
 const BackgroundTradeMonitor = require('./src/services/backgroundTradeMonitor');
@@ -914,7 +915,7 @@ function createWindow() {
                 margin-bottom: 16px;
                 color: #f1f5f9;
                 font-weight: 700;
-              ">2FA Verification</h2>
+              ">Email Verification</h2>
               <div style="margin-bottom: 24px;">
                 <p style="
                   color: #94a3b8;
@@ -967,7 +968,7 @@ function createWindow() {
             }
           });
         }
-        
+      
         // Listen for 2FA required event
         if (window.electronAPI && window.electronAPI.onPleaseEnter2FA) {
           window.electronAPI.onPleaseEnter2FA(() => {
@@ -1687,219 +1688,270 @@ ipcMain.handle('check-trade-readiness', async () => {
 });
 
 
-
-// Add this near your other IPC handlers (around line 300)
-
-// Add this near your other IPC handlers (around line 300)
 ipcMain.handle('login-with-qr', async () => {
   try {
-    logger.info('QR login requested');
+    logger.info('QR login requested from Flask UI');
     
-    // Fully terminate any existing session
+    // Terminate any existing session
     await terminateSteamSession();
     
     return new Promise((resolve, reject) => {
-      // Reset the lastReceivedToken for this login session
+      // Reset token tracking
       lastReceivedToken = null;
       
-      // Create new instances WITHOUT disabling data directory
-      user = new SteamUser({
-        autoRelogin: false,
-        promptSteamGuardCode: false
-        // Remove dataDirectory: null - this was causing the issue
-      });
-      
-      csgo = new GlobalOffensive(user);
-      
-      // Initialize trade manager
-      manager = new TradeOfferManager({
-        steam: user,
-        community: community,
-        language: 'en',
-        pollInterval: -1,
-        cancelTime: 0,
-        pendingCancelTime: 0
-      });
+      // Use steam-session instead of steam-user for QR
+      const session = new LoginSession(EAuthTokenPlatformType.SteamClient);
       
       let qrResolved = false;
-      let qrGenerated = false;
       
-      // Handle QR code generation
-      user.on('qr', (challengeUrl) => {
-        logger.info('QR code generated for login');
-        logger.info(`Challenge URL: ${challengeUrl}`);
+      // Handle successful authentication
+      session.on('authenticated', async () => {
+        const steamId = session.steamID;
+        const refreshToken = session.refreshToken;
+        const accountName = session.accountName;
         
-        qrGenerated = true;
+        logger.info(`QR auth successful: ${accountName} (${steamId})`);
+        logger.info(`Got refresh token: ${refreshToken ? 'Yes' : 'No'}`);
         
-        // Generate QR code from the challenge URL
-        const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=${encodeURIComponent(challengeUrl)}`;
+        // Now create regular steam-user session with the refresh token
+        user = new SteamUser();
+        csgo = new GlobalOffensive(user);
+        community = new SteamCommunity();
         
-        // Send QR code URL to renderer
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('qr-code-generated', qrUrl);
-        }
+        // Initialize trade manager
+        manager = new TradeOfferManager({
+          steam: user,
+          community: community,
+          language: 'en',
+          pollInterval: 10000,
+          cancelTime: 0,
+          pendingCancelTime: 0
+        });
+        
+        // Store the token
+        lastReceivedToken = refreshToken;
+        
+        // Login with refresh token
+        user.logOn({
+          refreshToken: refreshToken
+        });
+        
+        user.once('loggedOn', async () => {
+          const steamId64 = user.steamID.getSteamID64();
+          logger.info(`Main session established for ${steamId64}`);
+          
+          user.setPersona(SteamUser.EPersonaState.Online);
+          user.gamesPlayed([730]);
+          
+          // Track if we need to handle 2FA
+          let had2FA = false;
+          
+          // Handle device token
+          let dt = await getDeviceToken();
+          if (!dt) {
+            try {
+              logger.info('No device token, starting 2FA flow...');
+              had2FA = true;
+              
+              // Before starting 2FA, notify Flask that we're in 2FA flow
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                await mainWindow.webContents.executeJavaScript(`
+                  console.log('Entering 2FA flow, QR login pending...');
+                  // Keep the loading state
+                  const qrDisplay = document.getElementById('qr-display');
+                  if (qrDisplay) {
+                    qrDisplay.innerHTML = '<div class="qr-status"><div class="status-spinner"></div><span>Completing 2FA verification...</span></div>';
+                  }
+                `);
+              }
+              
+              dt = await ensureDeviceToken(steamId64);
+              logger.info('Device token obtained after 2FA');
+            } catch (err) {
+              logger.error('Error ensuring device token', err);
+              
+              // If 2FA fails, hide everything and show error
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                await mainWindow.webContents.executeJavaScript(`
+                  // Hide all modals
+                  const steamModal = document.getElementById('steam-credentials-modal');
+                  if (steamModal) {
+                    steamModal.remove();
+                  }
+                  
+                  // Hide 2FA modals
+                  const twoFAModal = document.getElementById('device-2fa-modal-injected');
+                  if (twoFAModal) {
+                    twoFAModal.style.display = 'none';
+                  }
+                  
+                  // Show error
+                  if (window.showFlashMessage) {
+                    window.showFlashMessage('error', 'Authentication failed during 2FA verification');
+                  }
+                `);
+              }
+              return;
+            }
+          }
+          
+          // Fetch and update accounts
+          try {
+            const accounts = await fetchAndUpdateAccountsFromFlaskEnhanced(dt);
+            const loggedInAccount = accounts.find(a => a.steamId === steamId64);
+            
+            if (loggedInAccount && refreshToken) {
+              await saveAccountData({
+                steamId: steamId64,
+                displayName: loggedInAccount.displayName || accountName,
+                refreshToken: refreshToken,
+                isRegistered: true,
+                avatarUrl: loggedInAccount.avatarUrl
+              });
+              
+              await removeTokenFromOtherAccounts(refreshToken, steamId64);
+            }
+          } catch (err) {
+            logger.error('Error updating accounts after QR login', err);
+          }
+          
+          // NOW send success to Flask UI (after everything is complete)
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            logger.info('Sending QR login success notification to Flask');
+            
+            await mainWindow.webContents.executeJavaScript(`
+              console.log('QR login fully complete, calling success handler');
+              
+              // First hide any 2FA modals
+              const twoFAModal = document.getElementById('device-2fa-modal-injected');
+              if (twoFAModal) {
+                twoFAModal.style.display = 'none';
+              }
+              
+              const emailModal = document.getElementById('email-modal-injected');
+              if (emailModal) {
+                emailModal.style.display = 'none';
+              }
+              
+              // Now call the success handler
+              if (window.handleQRLoginSuccess) {
+                window.handleQRLoginSuccess({
+                  steamId: '${steamId64}',
+                  accountName: '${accountName}'
+                });
+              } else {
+                // Fallback: manually hide the modal if handler doesn't exist
+                console.log('No handleQRLoginSuccess found, manually hiding modal');
+                const steamModal = document.getElementById('steam-credentials-modal');
+                if (steamModal) {
+                  steamModal.remove();
+                }
+                
+                if (window.showFlashMessage) {
+                  window.showFlashMessage('success', 'Successfully logged in as ${accountName}!');
+                }
+                
+                // Trigger storage scan
+                setTimeout(() => {
+                  if (window.performStorageScan) {
+                    window.performStorageScan('${steamId64}');
+                  }
+                }, 2000);
+              }
+            `).catch(err => logger.error('Failed to notify Flask of success:', err));
+          }
+        });
+        
+        // Set up web session
+        user.on('webSession', (sessionID, cookies) => {
+          logger.info('Web session obtained from QR login');
+          community.setCookies(cookies);
+          manager.setCookies(cookies, (err) => {
+            if (err) {
+              logger.error('Failed to set trade manager cookies', err);
+            } else {
+              logger.info('Trade manager ready');
+              setupTradeOfferListeners();
+            }
+          });
+        });
+        
+        // Handle errors
+        user.on('error', (err) => {
+          logger.error('Steam user error after QR login:', err);
+        });
         
         if (!qrResolved) {
           qrResolved = true;
-          resolve({ 
-            success: true, 
-            qrUrl: qrUrl,
-            qrGenerated: true
+          resolve({
+            success: true,
+            message: 'Authentication successful'
           });
         }
       });
       
-      // Handle successful login
-      user.on("loggedOn", async () => {
-        // Only process if QR was actually generated
-        if (!qrGenerated) {
-          logger.warn('Logged on without QR generation - rejecting');
-          if (!qrResolved) {
-            qrResolved = true;
-            reject(new Error('Login occurred without QR - please try password login'));
-          }
-          return;
+      // Handle timeout
+      session.on('timeout', () => {
+        logger.warn('QR login timeout');
+        if (!qrResolved) {
+          qrResolved = true;
+          reject(new Error('QR code expired'));
         }
-        
-        const steamId = user.steamID.getSteamID64();
-        logger.info(`QR login successful for ${steamId}`);
-        
-        user.setPersona(SteamUser.EPersonaState.Online);
-        user.gamesPlayed([730]);
-        
-        // Store the refresh token
-        let finalToken = lastReceivedToken;
-        
-        // Handle device token
-        let dt = await keytar.getPassword(SERVICE_NAME, DEVICE_TOKEN_KEY);
-        if (!dt) {
-          try {
-            dt = await ensureDeviceToken(steamId);
-            logger.info(`Device token confirmed`);
-          } catch (err) {
-            logger.error('Error ensuring device token', err);
-            return;
-          }
-        }
-        
-        // Get accounts from Flask API
-        try {
-          const accounts = await fetchAndUpdateAccountsFromFlaskEnhanced(dt);
-          const loggedInAccount = accounts.find(a => a.steamId === steamId);
-          
-          if (loggedInAccount && finalToken) {
-            await saveAccountData({
-              steamId,
-              displayName: loggedInAccount.displayName,
-              refreshToken: finalToken,
-              isRegistered: true,
-              avatarUrl: loggedInAccount.avatarUrl
-            });
-            
-            await removeTokenFromOtherAccounts(finalToken, steamId);
-          }
-          
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('qr-login-success', {
-              steamId,
-              displayName: loggedInAccount?.displayName || steamId,
-              avatarUrl: loggedInAccount?.avatarUrl || 'static/images/default-avatar.png'
-            });
-          }
-          
-          // Check inventory needs
-          try {
-            await checkInventoryNeeds(steamId);
-          } catch (err) {
-            logger.error(`Inventory-needs check failed`, err);
-          }
-          
-        } catch (err) {
-          logger.error(`Error during QR login account processing`, err);
-          
-          if (finalToken) {
-            await saveAccountData({
-              steamId,
-              displayName: steamId,
-              refreshToken: finalToken
-            });
-            
-            await removeTokenFromOtherAccounts(finalToken, steamId);
-          }
-        }
-        
-        // Set up trade offer listeners
-        setTimeout(() => {
-          setupTradeOfferListeners();
-        }, 2000);
-      });
-      
-      // Handle refresh token
-      user.on("refreshToken", (token) => {
-        if (!token) {
-          logger.warn("Got an empty refresh token from QR login");
-          return;
-        }
-        
-        logger.info(`Received refresh token from QR login`);
-        lastReceivedToken = token;
-      });
-      
-      // Handle web session
-      user.on("webSession", (sessionID, cookies) => {
-        logger.info(`QR login: Obtained web session`);
-        community.setCookies(cookies);
-        manager.setCookies(cookies, (err) => {
-          if (err) {
-            logger.error('Failed to set trade manager cookies', err);
-          } else {
-            logger.info('Trade manager cookies set successfully');
-          }
-        });
       });
       
       // Handle errors
-      user.on("error", (err) => {
-        logger.error(`QR login error`, err);
-        
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('qr-login-failed', err.message);
-        }
-        
+      session.on('error', (err) => {
+        logger.error('QR session error:', err);
         if (!qrResolved) {
           qrResolved = true;
           reject(err);
         }
       });
       
-      // CS:GO connection events
-      csgo.on("connectedToGC", () => {
-        logger.info("QR login: Connected to GC");
-      });
-      
-      // CRITICAL FIX: Use proper QR login parameters
-      logger.info('Starting QR login process...');
-      user.logOn({
-        qr: true,
-        anonymous: false  // Explicitly set this to false
-      });
-      
-      // Set a timeout in case QR isn't generated
-      setTimeout(() => {
-        if (!qrResolved) {
-          logger.error('QR generation timeout');
+      // Start QR session and get challenge URL
+      logger.info('Starting QR session...');
+      session.startWithQR()
+        .then(result => {
+          const qrUrl = result.qrChallengeUrl;
+          logger.info(`QR URL generated: ${qrUrl.substring(0, 50)}...`);
           
+          // Send QR URL to Flask UI
           if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('qr-login-failed', 'QR code generation timeout - please try password login');
+            // Use a simpler approach - store in window object
+            mainWindow.webContents.executeJavaScript(`
+              console.log('Received QR URL from Electron');
+              if (window.handleQRCode) {
+                window.handleQRCode('${qrUrl}');
+              } else {
+                // Fallback: store for later
+                window.pendingQRUrl = '${qrUrl}';
+                console.log('Stored QR URL for later use');
+              }
+            `).catch(err => logger.error('Failed to send QR to Flask:', err));
           }
           
-          reject(new Error('QR code generation timeout'));
+          // Don't resolve here - wait for authentication
+        })
+        .catch(err => {
+          logger.error('Failed to start QR session:', err);
+          if (!qrResolved) {
+            qrResolved = true;
+            reject(err);
+          }
+        });
+      
+      // Overall timeout
+      setTimeout(() => {
+        if (!qrResolved) {
+          qrResolved = true;
+          session.cancelLoginAttempt();
+          reject(new Error('QR login timeout (3 minutes)'));
         }
-      }, 10000);
+      }, 180000);
     });
     
   } catch (error) {
-    logger.error('QR login initialization failed', error);
+    logger.error('QR login failed:', error);
     throw error;
   }
 });
@@ -4317,7 +4369,7 @@ async function ensureDeviceToken(steamId) {
         throw new Error("2FA code is required");
       }
       
-      // Confirm with the code
+      
       logger.info("Confirming 2FA code with Flask...");
       const confirmResp = await axios.post(
         `${API_BASE_URL}/device_token_confirm`,
@@ -4326,18 +4378,63 @@ async function ensureDeviceToken(steamId) {
           code: twoFaCode
         }
       );
-      
+
       if (!confirmResp.data || !confirmResp.data.device_token) {
         throw new Error("Flask returned no device_token");
       }
-      
+
       const newToken = confirmResp.data.device_token;
       logger.info("✅ Device token obtained successfully from Flask");
-      
+
       // Store in Keytar
       await keytar.setPassword(SERVICE_NAME, DEVICE_TOKEN_KEY, newToken);
       logger.info("Device token stored securely");
-      
+
+      // IMPORTANT: Hide all modals after 2FA completes successfully
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        logger.info("Hiding modals after 2FA completion...");
+        await mainWindow.webContents.executeJavaScript(`
+          console.log('2FA completed, hiding all modals...');
+          
+          // Hide 2FA modal
+          const twoFAModal = document.getElementById('device-2fa-modal-injected');
+          if (twoFAModal) {
+            twoFAModal.style.display = 'none';
+            console.log('2FA modal hidden');
+          }
+          
+          // Hide email modal
+          const emailModal = document.getElementById('email-modal-injected');
+          if (emailModal) {
+            emailModal.style.display = 'none';
+            console.log('Email modal hidden');
+          }
+          
+          // Hide Steam credentials modal
+          const steamModal = document.getElementById('steam-credentials-modal');
+          if (steamModal) {
+            steamModal.style.display = 'none';
+            // Also try to remove it if it exists
+            setTimeout(() => {
+              if (steamModal.parentNode) {
+                steamModal.remove();
+                console.log('Steam credentials modal removed');
+              }
+            }, 300);
+          }
+          
+          // If we're in a QR login flow, call the success handler
+          if (window.qrLoginInProgress && window.handleQRLoginSuccess) {
+            console.log('Calling QR login success handler after 2FA');
+            window.handleQRLoginSuccess({
+              steamId: '${steamId}',
+              accountName: window.qrLoginAccountName || 'Steam User'
+            });
+            window.qrLoginInProgress = false;
+          }
+        `).catch(err => logger.error('Failed to hide modals after 2FA:', err));
+      }
+
       return newToken;
     }
     
