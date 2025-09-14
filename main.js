@@ -1,10 +1,14 @@
 // main.js
 // main.js
 require("dotenv").config();
-const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, Notification } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, Notification,  powerMonitor } = require("electron");
 const path = require("path");
 const fs = require('fs');
 const os = require('os');
+
+
+
+
 
 const SteamUser = require("steam-user");
 const GlobalOffensive = require("globaloffensive");
@@ -2317,7 +2321,7 @@ app.whenReady().then(async () => {
     }
   }
 
-  
+
   // CHECK FOR UPDATES FIRST
   setTimeout(() => {
     checkForUpdates();
@@ -2341,16 +2345,45 @@ app.whenReady().then(async () => {
   
   // Initialize background monitor and start it
   backgroundMonitor = new BackgroundTradeMonitor(logger, keytar, SERVICE_NAME);
-  
-  try {
-    await backgroundMonitor.start();
-    logger.info("✅ Background trade monitor started successfully");
-    updateTrayMenu();
-    
-    // Show startup notification
 
-  } catch (err) {
-    logger.error("❌ Failed to start background monitor:", err);
+try {
+  await backgroundMonitor.start();
+  logger.info("✅ Background trade monitor started successfully");
+  updateTrayMenu();
+  
+  // POWER MONITOR: Check trades when PC wakes from sleep
+  powerMonitor.on('resume', () => {
+    logger.info('System resumed from standby/sleep');
+    
+    if (backgroundMonitor && backgroundMonitor.isRunning) {
+      const status = backgroundMonitor.getStatus();
+      const now = new Date();
+      
+      if (status.lastCheckTime) {
+        const minutesSinceLastCheck = Math.floor((now - status.lastCheckTime) / 60000);
+        const checkInterval = status.checkInterval || 30;
+        
+        logger.info(`Last check was ${minutesSinceLastCheck} minutes ago (interval: ${checkInterval} min)`);
+        
+        // If it's been longer than the interval, check immediately
+        if (minutesSinceLastCheck >= checkInterval) {
+          logger.info('Triggering immediate trade check after wake');
+          backgroundMonitor.checkAllAccounts();
+        } else {
+          logger.info(`Only ${minutesSinceLastCheck} minutes passed, waiting for scheduled check`);
+        }
+      } else {
+        // No last check time, do check now
+        logger.info('No previous check found, checking now');
+        backgroundMonitor.checkAllAccounts();
+      }
+    }
+  });
+  
+  logger.info('Power monitor registered - will check trades on system wake');
+  
+} catch (err) {
+  logger.error("❌ Failed to start background monitor:", err);
     
     new Notification({
       title: 'CSWhale Error',
@@ -2390,6 +2423,21 @@ app.whenReady().then(async () => {
   
   logger.info("=== Background Service Ready ===");
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // Ensure single instance
 const gotTheLock = app.requestSingleInstanceLock();
