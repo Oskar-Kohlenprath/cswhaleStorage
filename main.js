@@ -2639,6 +2639,54 @@ ipcMain.handle('decline-trade-offer', async (event, offerId) => {
 });
 
 
+
+// Add this IPC handler for manual trade sync
+ipcMain.handle('sync-all-trade-offers', async () => {
+  try {
+    if (!backgroundMonitor) {
+      return { 
+        success: false, 
+        error: 'Background monitor not initialized' 
+      };
+    }
+    
+    logger.info('Manual trade sync requested from UI');
+    
+    // Show loading state
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.executeJavaScript(`
+        if (window.updateSyncButton) {
+          window.updateSyncButton('syncing');
+        }
+      `);
+    }
+    
+    const results = await backgroundMonitor.checkAllAccounts();
+    
+    const successCount = results.filter(r => r.success).length;
+    const totalOffers = results.reduce((sum, r) => 
+      sum + (r.received_offers?.length || 0) + (r.sent_offers?.length || 0), 0
+    );
+    
+    logger.info(`Manual sync complete: ${successCount}/${results.length} accounts, ${totalOffers} total offers`);
+    
+    return {
+      success: true,
+      accountsChecked: results.length,
+      accountsSuccessful: successCount,
+      totalOffers: totalOffers
+    };
+    
+  } catch (error) {
+    logger.error('Manual trade sync failed:', error);
+    return { 
+      success: false, 
+      error: error.message 
+    };
+  }
+});
+
+
 // Listen for new trade offers
 function setupTradeOfferListeners() {
   if (!manager) return;

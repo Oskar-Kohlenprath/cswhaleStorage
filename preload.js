@@ -34,6 +34,8 @@ onTradeOfferFailed: (callback) =>
   ipcRenderer.on('trade-offer-failed', (event, error) => callback(error)),
 
 
+
+
 // Add these to the electronAPI exposure
 sendTradeOffer: (orderId, assetIds, tradeUrl, sellerSteamId) => 
   ipcRenderer.invoke('send-trade-offer', orderId, assetIds, tradeUrl, sellerSteamId),
@@ -48,6 +50,9 @@ getOrderSellerSteamId: (orderId) =>
   // Storage scanning with account
   scanStorageForAccount: (steamId) => ipcRenderer.invoke('scan-storage-for-account', steamId),
 
+  // Add this in the electronAPI object in preload.js
+  syncAllTradeOffers: () => ipcRenderer.invoke('sync-all-trade-offers'),
+
     sendSteamGuardCode: (code) => ipcRenderer.send('steamGuard-code', code),
   onSteamGuardRequired: (callback) => 
     ipcRenderer.on('steamGuard-required', (event, domain) => callback(domain)),
@@ -61,7 +66,8 @@ getOrderSellerSteamId: (orderId) =>
   // Use existing login handler
   steamLoginWithToken: (steamId) => ipcRenderer.invoke('login-with-refresh-token', steamId),
   
-  // New wrapper for scanning
+
+  
   scanAllStorage: () => ipcRenderer.invoke('scan-all-storage'),
   getStorageStatus: () => ipcRenderer.invoke('get-storage-status'),
   
