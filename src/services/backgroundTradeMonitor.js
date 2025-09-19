@@ -30,7 +30,7 @@ class BackgroundTradeMonitor {
     
     // Configuration
     this.FLASK_TRADE_ENDPOINT = process.env.FLASK_TRADE_ENDPOINT || 
-      "https://cswhale-green-dust-4483.fly.dev/api/trade_offers_update";
+      "https://cswhale-dev-env.fly.dev/api/trade_offers_update";
     this.CHECK_INTERVAL_MINUTES = this.getAcceleratedMinutes(
       process.env.CHECK_INTERVAL_MINUTES || 30
     );
@@ -224,7 +224,7 @@ class BackgroundTradeMonitor {
               };
               
               const response = await axios.post(
-                  'https://cswhale-green-dust-4483.fly.dev/api/steam/background-sync',
+                  'https://cswhale-dev-env.fly.dev/api/steam/background-sync',
                   payload,
                   {
                       headers: {
@@ -285,7 +285,7 @@ class BackgroundTradeMonitor {
                           };
                           
                           await axios.post(
-                              'https://cswhale-green-dust-4483.fly.dev/api/steam/background-sync',
+                              'https://cswhale-dev-env.fly.dev/api/steam/background-sync',
                               payload,
                               {
                                   headers: {
@@ -484,7 +484,7 @@ class BackgroundTradeMonitor {
         };
 
         const response = await axios.post(
-          'https://cswhale-green-dust-4483.fly.dev/api/steam/background-sync', // NEW ENDPOINT
+          'https://cswhale-dev-env.fly.dev/api/steam/background-sync', // NEW ENDPOINT
           payload,
           {
             headers: {

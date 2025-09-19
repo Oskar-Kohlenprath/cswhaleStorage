@@ -154,6 +154,18 @@ onSetAutoScanPending: (callback) => ipcRenderer.on('set-auto-scan-pending', call
   onUpdateDownloaded: (callback) => ipcRenderer.on('update-downloaded', (event, info) => callback(info)),
 
   ensureCorrectSteamSession: (steamId) => ipcRenderer.invoke('ensure-correct-steam-session', steamId),
+
+
+
+
+  getMoverInventory: () => ipcRenderer.invoke('get-mover-inventory'),
+  getMoverStorage: () => ipcRenderer.invoke('get-mover-storage'), 
+  moveItems: (moveData) => ipcRenderer.invoke('move-mover-items', moveData),
+
+  // preload.js - Update the mover functions
+  loadMoverData: () => ipcRenderer.invoke('mover-load-data'),
+  getStorageContents: (storageId) => ipcRenderer.invoke('mover-get-storage-contents', storageId),
+  executeMoverMove: (moveData) => ipcRenderer.invoke('mover-execute-move', moveData),
 });
 
 

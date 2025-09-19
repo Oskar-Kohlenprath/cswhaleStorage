@@ -10,6 +10,7 @@ const os = require('os');
 
 
 
+
 const SteamUser = require("steam-user");
 const GlobalOffensive = require("globaloffensive");
 const SteamCommunity = require("steamcommunity");
@@ -21,6 +22,8 @@ const { LoginSession, EAuthTokenPlatformType } = require('steam-session');
 
 const ItemEnricher = require('./src/enrichment/itemEnricher');
 const BackgroundTradeMonitor = require('./src/services/backgroundTradeMonitor');
+
+const Mover = require('./src/mover');
 
 let itemEnricher;
 
@@ -37,7 +40,7 @@ const MAX_INVENTORY_SIZE = 1000;
 const MAX_CASKET_SIZE = 1000;
 const INVENTORY_BUFFER = 50; // Increased buffer for safety
 const SAFE_INVENTORY_SIZE = MAX_INVENTORY_SIZE - INVENTORY_BUFFER;
-const API_BASE_URL = "https://cswhale-green-dust-4483.fly.dev/api";
+const API_BASE_URL = "https://cswhale-dev-env.fly.dev/api";
 
 // Global variables
 let mainWindow = null;  // Start as null, create only when needed
@@ -52,6 +55,8 @@ let tray = null;
 let backgroundMonitor = null;
 let isQuitting = false;
 let windowCreated = false;
+let mover = null;
+
 
 
 
@@ -669,7 +674,7 @@ function createWindow() {
   });
 
   // Load Flask app with custom headers to identify Electron
-  const flaskUrl = process.env.FLASK_URL || 'https://cswhale-green-dust-4483.fly.dev';
+  const flaskUrl = process.env.FLASK_URL || 'https://cswhale-dev-env.fly.dev';
   
   mainWindow.loadURL(flaskUrl, {
     userAgent: mainWindow.webContents.getUserAgent() + ' CSWhaleDesktop/1.0',
@@ -1063,6 +1068,137 @@ function createWindow() {
   }
 }
 
+// Mover IPC Handlers
+ipcMain.handle('get-mover-inventory', async () => {
+  try {
+    if (!user || !csgo || !csgo.haveGCSession) {
+      return { success: false, error: 'Not connected to Steam' };
+    }
+    
+    const inventory = await getWebInventory();
+    
+    // Enrich items if enricher is available
+    const enrichedItems = [];
+    for (const item of inventory) {
+      if (itemEnricher) {
+        const enriched = await itemEnricher.enrichItem(item);
+        enrichedItems.push({
+          assetid: item.assetid,
+          market_hash_name: enriched.market_hash_name || item.market_hash_name,
+          icon_url: enriched.icon_url || item.icon_url,
+          tradable: item.tradable,
+          category: enriched.item_type || 'weapon',
+          wear: enriched.item_wear_name
+        });
+      } else {
+        enrichedItems.push(item);
+      }
+    }
+    
+    return {
+      success: true,
+      items: enrichedItems
+    };
+  } catch (error) {
+    logger.error('Failed to get mover inventory:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('get-mover-storage', async () => {
+  try {
+    if (!user || !csgo || !csgo.haveGCSession) {
+      return { success: false, error: 'Not connected to Steam' };
+    }
+    
+    const caskets = await fetchAllCaskets();
+    
+    return {
+      success: true,
+      units: caskets.map(c => ({
+        id: c.casketId,
+        name: c.casketName,
+        item_count: c.itemCount
+      }))
+    };
+  } catch (error) {
+    logger.error('Failed to get storage units:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('get-storage-contents', async (event, storageId) => {
+  try {
+    if (!user || !csgo || !csgo.haveGCSession) {
+      return { success: false, error: 'Not connected to Steam' };
+    }
+    
+    const contents = await fetchCasketContents(storageId);
+    
+    // Enrich items
+    const enrichedItems = [];
+    for (const item of contents) {
+      if (itemEnricher) {
+        const enriched = await itemEnricher.enrichItem(item);
+        enrichedItems.push({
+          assetid: item.id,
+          market_hash_name: enriched.market_hash_name,
+          icon_url: enriched.icon_url,
+          category: enriched.item_type || 'weapon',
+          wear: enriched.item_wear_name
+        });
+      } else {
+        enrichedItems.push({
+          assetid: item.id,
+          market_hash_name: 'Unknown Item',
+          icon_url: ''
+        });
+      }
+    }
+    
+    return {
+      success: true,
+      items: enrichedItems
+    };
+  } catch (error) {
+    logger.error('Failed to get storage contents:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('move-mover-items', async (event, moveData) => {
+  try {
+    if (!user || !csgo || !csgo.haveGCSession) {
+      return { success: false, error: 'Not connected to Steam' };
+    }
+    
+    const { action, items, target_storage, source_storage } = moveData;
+    
+    logger.info(`Moving ${items.length} items: ${action}`);
+    
+    if (action === 'to_storage') {
+      // Move items from inventory to storage
+      for (const assetId of items) {
+        csgo.addToCasket(target_storage, assetId);
+        await delay(DELAY_MS);
+      }
+    } else if (action === 'to_inventory') {
+      // Move items from storage to inventory
+      for (const assetId of items) {
+        csgo.removeFromCasket(source_storage, assetId);
+        await delay(DELAY_MS);
+      }
+    }
+    
+    logger.info(`Successfully moved ${items.length} items`);
+    
+    return { success: true };
+    
+  } catch (error) {
+    logger.error('Failed to move items:', error);
+    return { success: false, error: error.message };
+  }
+});
 
 
 // In main.js - fetch-asset-ids handler
@@ -2301,6 +2437,10 @@ function saveSettings(updates) {
  * Initialize application
  */
 app.whenReady().then(async () => {
+
+
+
+
   logger.info("=== CSWhale Background Service Starting ===");
 
 
@@ -2403,6 +2543,14 @@ try {
     logger.error('Failed to initialize item enricher', err);
   });
   
+
+  try {
+    mover = new Mover(logger, itemEnricher);
+    logger.info("✅ Mover module initialized");
+  } catch (err) {
+    logger.error('Failed to initialize mover:', err);
+  }
+
   // ============= ADD THIS SECTION =============
   // Check if we should show the window
   const shouldShowWindow = process.argv.includes('--show') || 
@@ -2423,14 +2571,6 @@ try {
   
   logger.info("=== Background Service Ready ===");
 });
-
-
-
-
-
-
-
-
 
 
 
@@ -3812,6 +3952,12 @@ async function initCSGO(credentials) {
         setupTradeOfferListeners();
       }, 2000);
 
+
+      global.user = user;
+      global.csgo = csgo;
+      global.community = community;
+      logger.info("Globals set for mover access");
+
     });
 
     // Web session handling - CRITICAL: Set cookies for both community and trade manager
@@ -3820,13 +3966,18 @@ async function initCSGO(credentials) {
       
       // Set cookies for community
       community.setCookies(cookies);
+
+
+      global.user = user;
+      global.csgo = csgo;
+      global.community = community;
       
       // Set cookies for trade manager
       manager.setCookies(cookies, (err) => {
         if (err) {
           logger.error('Failed to set trade manager cookies', err);
         } else {
-          logger.info('Trade manager cookies set successfully');
+          logger.info('Trade manager cookies set successfully')
           
           // Get API key for trade confirmations (optional but recommended)
           manager.setCookies(cookies, (err) => {
@@ -4235,8 +4386,18 @@ async function terminateSteamSession() {
     // Force new instances
     user = new SteamUser();
     csgo = new GlobalOffensive(user);
+
+
     csgo.setMaxListeners(20);
   }
+
+
+    // ADD THIS AT THE VERY END (right here, before the closing brace):
+  global.user = null;
+  global.csgo = null;
+  global.community = null;
+
+
 }
 
 /**
