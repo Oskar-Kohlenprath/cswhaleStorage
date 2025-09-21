@@ -169,162 +169,137 @@ setupIPCHandlers() {
   }
 
   async getStorageContents(storageId) {
-  try {
-    const csgo = global.csgo;
-    
-    if (!csgo) {
-      return { success: false, error: 'Not connected' };
-    }
-
-    const items = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('Timeout loading storage contents'));
-      }, 10000);
+    try {
+      const csgo = global.csgo;
       
-      csgo.getCasketContents(storageId, async (err, items) => {
-        clearTimeout(timeout);
-        if (err) {
-          reject(err);
-          return;
-        }
-        resolve(items || []);
-      });
-    });
+      if (!csgo) {
+        return { success: false, error: 'Not connected' };
+      }
 
-    // Enrich items first to get market_hash_name
-    const enrichedItems = [];
-    for (const item of items) {
-      try {
-        let itemData = {
-          assetid: item.id,
-          market_hash_name: 'Unknown Item',
-          icon_url: '',
-          category: 'weapon',
-          wear: null
-        };
-
-        if (this.itemEnricher && this.itemEnricher.initialized) {
-          const enriched = await this.itemEnricher.enrichItem(item);
-          itemData.market_hash_name = enriched.market_hash_name || 'Unknown';
-          itemData.category = enriched.item_type || 'weapon';
-          itemData.wear = enriched.item_wear_name;
-        }
-
-        enrichedItems.push(itemData);
-      } catch (enrichErr) {
-        this.logger.error('Failed to enrich storage item:', enrichErr);
-        enrichedItems.push({
-          assetid: item.id,
-          market_hash_name: 'Unknown Item',
-          icon_url: '',
-          category: 'weapon'
+      const items = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Timeout loading storage contents'));
+        }, 10000);
+        
+        csgo.getCasketContents(storageId, async (err, items) => {
+          clearTimeout(timeout);
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve(items || []);
         });
-      }
-    }
+      });
 
-    // Now batch request icons from Flask with DETAILED LOGGING
-    if (enrichedItems.length > 0) {
-      try {
-        this.logger.info('=== STARTING ICON FETCH ===');
-        this.logger.info('Number of items to get icons for:', enrichedItems.length);
-        
-        // Log the API base URL
-        this.logger.info('API_BASE_URL from global:', global.API_BASE_URL);
-        const fullUrl = `${global.API_BASE_URL}/get_item_icons`;
-        this.logger.info('Full URL to call:', fullUrl);
-        
-        // Try to get device token
-        let deviceToken = null;
+      // Enrich items first to get market_hash_name
+      const enrichedItems = [];
+      for (const item of items) {
         try {
-          this.logger.info('Attempting to get device token...');
-          deviceToken = await global.keytar.getPassword(global.SERVICE_NAME, global.DEVICE_TOKEN_KEY);
-          this.logger.info('Device token retrieved:', deviceToken ? 'YES (length: ' + deviceToken.length + ')' : 'NO');
-        } catch (tokenError) {
-          this.logger.error('Failed to get device token:', tokenError.message);
-        }
-        
-        // Prepare request body
-        const requestBody = {
-          items: enrichedItems.map(item => ({
-            market_hash_name: item.market_hash_name
-          }))
-        };
-        this.logger.info('Request body prepared with', requestBody.items.length, 'items');
-        this.logger.info('Sample item names:', requestBody.items.slice(0, 3).map(i => i.market_hash_name));
-        
-        // Prepare headers
-        const headers = {
-          'Content-Type': 'application/json'
-        };
-        if (deviceToken) {
-          headers['Authorization'] = `Bearer ${deviceToken}`;
-          this.logger.info('Authorization header added');
-        } else {
-          this.logger.info('No Authorization header (no device token)');
-        }
-        this.logger.info('Headers:', JSON.stringify(headers));
-        
-        // Make the actual request
-        this.logger.info('Making axios POST request to:', fullUrl);
-        const iconResponse = await axios.post(fullUrl, requestBody, { headers });
-        
-        this.logger.info('Response received! Status:', iconResponse.status);
-        this.logger.info('Response data keys:', Object.keys(iconResponse.data || {}));
-        
-        // Map icons back to items
-        if (iconResponse.data && iconResponse.data.icons) {
-          const iconMap = iconResponse.data.icons;
-          this.logger.info('Icon map received with', Object.keys(iconMap).length, 'entries');
-          
-          enrichedItems.forEach(item => {
-            if (iconMap[item.market_hash_name]) {
-              item.icon_url = iconMap[item.market_hash_name];
-            }
+          let itemData = {
+            assetid: item.id,
+            market_hash_name: 'Unknown Item',
+            icon_url: '',
+            category: 'weapon',
+            wear: null
+          };
+
+          if (this.itemEnricher && this.itemEnricher.initialized) {
+            const enriched = await this.itemEnricher.enrichItem(item);
+            itemData.market_hash_name = enriched.market_hash_name || 'Unknown';
+            itemData.category = enriched.item_type || 'weapon';
+            itemData.wear = enriched.item_wear_name;
+          }
+
+          enrichedItems.push(itemData);
+        } catch (enrichErr) {
+          this.logger.error('Failed to enrich storage item:', enrichErr);
+          enrichedItems.push({
+            assetid: item.id,
+            market_hash_name: 'Unknown Item',
+            icon_url: '',
+            category: 'weapon'
           });
-          this.logger.info('Icons successfully mapped to items');
-        } else {
-          this.logger.warn('No icons in response data');
         }
-        
-        this.logger.info('=== ICON FETCH COMPLETED ===');
-        
-      } catch (iconError) {
-        this.logger.error('=== ICON FETCH FAILED ===');
-        this.logger.error('Error type:', iconError.name);
-        this.logger.error('Error message:', iconError.message);
-        
-        if (iconError.code) {
-          this.logger.error('Error code:', iconError.code);
-        }
-        
-        if (iconError.response) {
-          this.logger.error('Response status:', iconError.response.status);
-          this.logger.error('Response status text:', iconError.response.statusText);
-          this.logger.error('Response data:', JSON.stringify(iconError.response.data));
-          this.logger.error('Response headers:', JSON.stringify(iconError.response.headers));
-        } else if (iconError.request) {
-          this.logger.error('Request was made but no response received');
-          this.logger.error('Request details:', iconError.request);
-        } else {
-          this.logger.error('Error setting up request:', iconError.message);
-        }
-        
-        this.logger.error('Full error object:', iconError);
-        this.logger.error('Stack trace:', iconError.stack);
-        // Continue without icons
       }
+
+      // Now batch request icons from Flask - DEDUPLICATED
+      if (enrichedItems.length > 0) {
+        try {
+          // Get unique market_hash_names
+          const uniqueNames = [...new Set(enrichedItems.map(item => item.market_hash_name))];
+          
+          // FIX: Pass the values to the logger
+          this.logger.info(`Storage has ${enrichedItems.length} items`);
+          this.logger.info(`Unique item types: ${uniqueNames.length}`);
+          
+          // Only request icons for unique items
+          const deviceToken = await global.keytar.getPassword(global.SERVICE_NAME, global.DEVICE_TOKEN_KEY);
+          
+          const iconResponse = await axios.post(
+            `${global.API_BASE_URL}/get_item_icons`,
+            {
+              items: uniqueNames.map(name => ({
+                market_hash_name: name
+              })),
+              device_token: deviceToken
+            },
+            {
+              headers: {
+                'Content-Type': 'application/json'
+              }
+            }
+          );
+
+          // Map icons back to items
+          if (iconResponse.data && iconResponse.data.icons) {
+            const iconMap = iconResponse.data.icons;
+            
+            // Log what we got back
+            this.logger.info(`Received icons for ${Object.keys(iconMap).length} unique items`);
+            
+            // Log a sample icon URL to verify format
+            const sampleName = Object.keys(iconMap)[0];
+            if (sampleName) {
+              this.logger.info(`Sample icon URL: ${iconMap[sampleName]}`);
+            }
+            
+            // Apply icons to all items with matching market_hash_name
+            let iconsMapped = 0;
+            enrichedItems.forEach(item => {
+              if (iconMap[item.market_hash_name]) {
+                item.icon_url = iconMap[item.market_hash_name];
+                iconsMapped++;
+              }
+            });
+            
+            this.logger.info(`Successfully mapped icons to ${iconsMapped} items`);
+          } else {
+            this.logger.warn('No icons in response data');
+          }
+        } catch (iconError) {
+          this.logger.warn('Failed to get icons from Flask:', iconError.message);
+          if (iconError.response) {
+            this.logger.warn('Response status:', iconError.response.status);
+            this.logger.warn('Response data:', JSON.stringify(iconError.response.data));
+          }
+          // Continue without icons
+        }
+      }
+
+      // Log the final result
+      const itemsWithIcons = enrichedItems.filter(item => item.icon_url).length;
+      this.logger.info(`Returning ${enrichedItems.length} items, ${itemsWithIcons} with icons`);
+
+      return {
+        success: true,
+        items: enrichedItems
+      };
+
+    } catch (error) {
+      this.logger.error('Failed to get storage contents:', error);
+      return { success: false, error: error.message };
     }
-
-    return {
-      success: true,
-      items: enrichedItems
-    };
-
-  } catch (error) {
-    this.logger.error('Failed to get storage contents:', error);
-    return { success: false, error: error.message };
   }
-}
 
   async executeMove(moveData) {
     try {
