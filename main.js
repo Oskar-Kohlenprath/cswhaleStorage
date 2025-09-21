@@ -60,6 +60,13 @@ let mover = null;
 
 
 
+// After your constant definitions in main.js, add:
+global.API_BASE_URL = API_BASE_URL;
+global.SERVICE_NAME = SERVICE_NAME;
+global.DEVICE_TOKEN_KEY = DEVICE_TOKEN_KEY;
+global.keytar = keytar;
+
+
 // IMPORTANT: Hide dock icon on macOS immediately
 if (process.platform === 'darwin') {
   app.dock.hide();
