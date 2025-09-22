@@ -40,7 +40,7 @@ const MAX_INVENTORY_SIZE = 1000;
 const MAX_CASKET_SIZE = 1000;
 const INVENTORY_BUFFER = 50; // Increased buffer for safety
 const SAFE_INVENTORY_SIZE = MAX_INVENTORY_SIZE - INVENTORY_BUFFER;
-const API_BASE_URL = "https://cswhale-dev-env.fly.dev/api";
+const API_BASE_URL = "https://cswhale-green-dust-4483.fly.dev/api";
 
 // Global variables
 let mainWindow = null;  // Start as null, create only when needed
@@ -681,7 +681,7 @@ function createWindow() {
   });
 
   // Load Flask app with custom headers to identify Electron
-  const flaskUrl = process.env.FLASK_URL || 'https://cswhale-dev-env.fly.dev';
+  const flaskUrl = process.env.FLASK_URL || 'https://cswhale-green-dust-4483.fly.dev';
   
   mainWindow.loadURL(flaskUrl, {
     userAgent: mainWindow.webContents.getUserAgent() + ' CSWhaleDesktop/1.0',
@@ -1070,8 +1070,8 @@ function createWindow() {
   });
 
   // Open DevTools only in development
-  if (process.env.NODE_ENV === 'development') {
-    mainWindow.webContents.openDevTools();
+  if (process.env.NODE_ENV !== 'development' || app.isPackaged) {
+    mainWindow.webContents.closeDevTools();
   }
 }
 
@@ -1359,7 +1359,56 @@ ipcMain.handle('ensure-correct-steam-session', async (event, requiredSteamId) =>
 
 
 
-
+// Make the function available globally for mover
+global.ensureCorrectSteamSession = async (requiredSteamId) => {
+  // Just copy the exact same logic from the handler above
+  try {
+    const currentSteamId = user && user.steamID ? user.steamID.getSteamID64() : null;
+    
+    if (currentSteamId === requiredSteamId) {
+      logger.info(`Already logged in as ${requiredSteamId}`);
+      return { success: true };
+    }
+    
+    logger.info(`Need to switch from ${currentSteamId} to ${requiredSteamId}`);
+    
+    const accounts = await getAllAccounts();
+    const targetAccount = accounts.find(a => a.steamId === requiredSteamId);
+    
+    if (!targetAccount || !targetAccount.refreshToken || targetAccount.refreshToken.trim() === '') {
+      logger.info(`No refresh token for ${requiredSteamId}, login required`);
+      return { 
+        success: false, 
+        needsLogin: true,
+        error: 'Login required for seller account'
+      };
+    }
+    
+    await terminateSteamSession();
+    await initCSGO({ refreshToken: targetAccount.refreshToken });
+    
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Connection timeout'));
+      }, 30000);
+      
+      const checkInterval = setInterval(() => {
+        if (user && user.steamID && user.steamID.getSteamID64() === requiredSteamId && csgo && csgo.haveGCSession) {
+          clearInterval(checkInterval);
+          clearTimeout(timeout);
+          resolve();
+        }
+      }, 500);
+    });
+    
+    logger.info(`Successfully switched to ${requiredSteamId}`);
+    return { success: true };
+    
+  } catch (error) {
+    logger.error('Failed to ensure correct Steam session:', error);
+    return { success: false, error: error.message };
+  }
+};
 
 ipcMain.handle('send-trade-offer', async (event, orderId, assetIds, tradeUrl, sellerSteamId) => {
   try {
@@ -1870,7 +1919,7 @@ ipcMain.handle('login-with-qr', async () => {
           steam: user,
           community: community,
           language: 'en',
-          pollInterval: 10000,
+          pollInterval: 60000,
           cancelTime: 0,
           pendingCancelTime: 0
         });
@@ -3034,6 +3083,9 @@ async function getAllAccounts() {
   return await loadAccountsJSON();
 }
 
+
+
+
 /**
  * Save account data to storage
  * @param {Object} accountData - Account data to save
@@ -3122,6 +3174,10 @@ async function saveAccountData({
     logger.error("Error saving account data", err);
   }
 }
+
+
+
+
 
 /**
  * Handle login with refresh token
@@ -3827,7 +3883,7 @@ async function initCSGO(credentials) {
       steam: user,
       community: community,
       language: 'en',
-      pollInterval: 10000, // Check for trade updates every 10 seconds
+      pollInterval: 60000, // Check for trade updates every 10 seconds
       cancelTime: 0,  // Cancel outgoing offers after 5 minutes
       pendingCancelTime: 0 // Cancel offers pending confirmation after 30 seconds
     });
@@ -5360,7 +5416,17 @@ module.exports = syncInventoryWithServer;
 
 
 
+app.on('before-quit', () => {
+    // Clean up any stuck flags
+    global.lastMoverActivity = null;
+    global.activeMoveCount = 0;
+});
 
+app.on('window-all-closed', () => {
+    // Reset activity tracking
+    global.lastMoverActivity = null;
+    global.activeMoveCount = 0;
+});
 
 
 

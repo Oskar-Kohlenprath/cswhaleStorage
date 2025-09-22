@@ -73,7 +73,7 @@ class ItemEnricher {
 
     // Download items_game.txt
     this.logger.info('Downloading items_game.txt...');
-    const itemsGameUrl = 'https://cswhale-dev-env.fly.dev/counterstrike/items_game.txt';
+    const itemsGameUrl = 'https://cswhale-green-dust-4483.fly.dev/counterstrike/items_game.txt';
     const itemsResponse = await axios.get(itemsGameUrl, { 
       timeout: 60000, // 60 seconds
       maxContentLength: 100 * 1024 * 1024 // 100MB max
@@ -89,7 +89,7 @@ class ItemEnricher {
     
     // Download translations
     this.logger.info('Downloading translations...');
-    const translationsUrl = 'https://cswhale-dev-env.fly.dev/counterstrike/csgo_english.txt';
+    const translationsUrl = 'https://cswhale-green-dust-4483.fly.dev/counterstrike/csgo_english.txt';
     const transResponse = await axios.get(translationsUrl, { timeout: 30000 });
     
     this.logger.info(`Downloaded translations: ${transResponse.data.length} bytes`);

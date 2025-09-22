@@ -15,7 +15,7 @@ class BackgroundTradeMonitor {
      * @param {number} minutes - original minutes
      * @returns {number} - accelerated minutes
      */
-    const factor = 0.1; // Hardcoded: 24h -> 24min
+    const factor = 1; // Hardcoded: 24h -> 24mi
     return Math.max(1, Math.round(minutes * factor)); // Min 1 minute
 }
   constructor(logger, keytar, serviceName) {
@@ -30,7 +30,7 @@ class BackgroundTradeMonitor {
     
     // Configuration
     this.FLASK_TRADE_ENDPOINT = process.env.FLASK_TRADE_ENDPOINT || 
-      "https://cswhale-dev-env.fly.dev/api/trade_offers_update";
+      "https://cswhale-green-dust-4483.fly.dev/api/trade_offers_update";
     this.CHECK_INTERVAL_MINUTES = this.getAcceleratedMinutes(
       process.env.CHECK_INTERVAL_MINUTES || 30
     );
@@ -97,6 +97,22 @@ class BackgroundTradeMonitor {
   }
 
   async checkAllAccounts() {
+    
+    if (global.lastMoverActivity) {
+      const timeSinceActivity = Date.now() - global.lastMoverActivity;
+      if (timeSinceActivity < 300000) { // 5 minutes
+        const minutesAgo = Math.round(timeSinceActivity / 60000);
+        this.logger.info(`[INFO] Mover was active ${minutesAgo} minute(s) ago, skipping background check`);
+        return [];
+      }
+    }
+    
+    // Check for active move operations
+    if (global.activeMoveCount && global.activeMoveCount > 0) {
+      this.logger.info(`[INFO] Active move operation in progress (${global.activeMoveCount} operations), skipping check`);
+      return [];
+    }
+    
     this.logger.info('=== Starting background trade check for all accounts ===');
     const startTime = Date.now();
     
@@ -224,7 +240,7 @@ class BackgroundTradeMonitor {
               };
               
               const response = await axios.post(
-                  'https://cswhale-dev-env.fly.dev/api/steam/background-sync',
+                  'https://cswhale-green-dust-4483.fly.dev/api/steam/background-sync',
                   payload,
                   {
                       headers: {
@@ -285,7 +301,7 @@ class BackgroundTradeMonitor {
                           };
                           
                           await axios.post(
-                              'https://cswhale-dev-env.fly.dev/api/steam/background-sync',
+                              'https://cswhale-green-dust-4483.fly.dev/api/steam/background-sync',
                               payload,
                               {
                                   headers: {
@@ -484,7 +500,7 @@ class BackgroundTradeMonitor {
         };
 
         const response = await axios.post(
-          'https://cswhale-dev-env.fly.dev/api/steam/background-sync', // NEW ENDPOINT
+          'https://cswhale-green-dust-4483.fly.dev/api/steam/background-sync', // NEW ENDPOINT
           payload,
           {
             headers: {

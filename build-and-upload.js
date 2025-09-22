@@ -14,7 +14,7 @@ const axios = require('axios');
 // Configuration
 const CONFIG = {
   FLASK_ADMIN_TOKEN: process.env.FLASK_ADMIN_TOKEN || 'YOUR_ADMIN_TOKEN',
-  FLASK_URL: process.env.FLASK_URL || 'cswhale-dev-env.fly.dev',
+  FLASK_URL: process.env.FLASK_URL || 'cswhale-green-dust-4483.fly.dev',
   DIST_DIR: path.join(__dirname, 'dist'),
   PACKAGE_JSON: path.join(__dirname, 'package.json')
 };

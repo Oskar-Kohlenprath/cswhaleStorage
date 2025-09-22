@@ -166,6 +166,12 @@ onSetAutoScanPending: (callback) => ipcRenderer.on('set-auto-scan-pending', call
   loadMoverData: () => ipcRenderer.invoke('mover-load-data'),
   getStorageContents: (storageId) => ipcRenderer.invoke('mover-get-storage-contents', storageId),
   executeMoverMove: (moveData) => ipcRenderer.invoke('mover-execute-move', moveData),
+
+
+  // Add these to your electronAPI exports
+  getCurrentAccount: () => ipcRenderer.invoke('mover-get-current-account'),
+  getAllAccounts: () => ipcRenderer.invoke('mover-get-all-accounts'),
+  switchAccount: (steamId) => ipcRenderer.invoke('mover-switch-account', steamId),
 });
 
 
