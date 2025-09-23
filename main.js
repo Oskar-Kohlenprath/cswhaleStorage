@@ -304,12 +304,63 @@ autoUpdater.on('update-downloaded', (info) => {
   // Force quit and install after 5 seconds
   setTimeout(() => {
     logger.info('Installing update now...');
+    
+    // Set quitting flag FIRST
+    isQuitting = true;
+    
+    // Clean up everything
+    if (backgroundMonitor) {
+      backgroundMonitor.stop();
+      backgroundMonitor = null;
+    }
+    
+    if (tray) {
+      tray.destroy();
+      tray = null;
+    }
+    
+    if (user) {
+      try {
+        user.logOff();
+        user = null;
+      } catch (e) {
+        logger.error('Error logging off Steam:', e);
+      }
+    }
+    
+    if (manager) {
+      try {
+        manager.shutdown();
+        manager = null;
+      } catch (e) {
+        logger.error('Error shutting down trade manager:', e);
+      }
+    }
+    
+    if (logStream) {
+      logStream.end();
+      logStream = null;
+    }
+    
+    // Close all windows
+    BrowserWindow.getAllWindows().forEach(window => {
+      window.destroy();
+    });
+    
+    // Clear all listeners
+    app.removeAllListeners('before-quit');
+    app.removeAllListeners('window-all-closed');
+    
+    // Force quit and install
     setImmediate(() => {
-      app.removeAllListeners("before-quit");
-      autoUpdater.quitAndInstall(false, true);
+      autoUpdater.quitAndInstall(true, true); // Force restart
     });
   }, 5000);
 });
+
+
+
+
 
 autoUpdater.on('error', (err) => {
   logger.error('Auto-updater error:', err);
@@ -2651,29 +2702,71 @@ if (!gotTheLock) {
 
 
 
-app.on('before-quit', () => {
-  logger.info('=== CSWhale Background Service Shutting Down ===');
-  isQuitting = true;
-  
-  if (backgroundMonitor) {
-    backgroundMonitor.stop();
-    logger.info('Background monitor stopped');
-  }
-  
-  if (tray) {
-    tray.destroy();
-  }
-  
-  if (logStream) {
-    logStream.end();
+
+
+app.on('before-quit', (event) => {
+  // Only do cleanup if we're not already in the quitting process
+  if (!isQuitting) {
+    logger.info('=== CSWhale Background Service Shutting Down ===');
+    isQuitting = true;
+    
+    // Stop background monitor
+    if (backgroundMonitor) {
+      backgroundMonitor.stop();
+      logger.info('Background monitor stopped');
+    }
+    
+    // Destroy tray
+    if (tray) {
+      tray.destroy();
+      tray = null;
+    }
+    
+    // End log stream
+    if (logStream) {
+      logStream.end();
+      logStream = null;
+    }
+    
+    // Clean up any stuck flags
+    global.lastMoverActivity = null;
+    global.activeMoveCount = 0;
+    
+    // Clean up Steam sessions
+    if (user) {
+      try {
+        user.logOff();
+      } catch (e) {
+        // Ignore errors during shutdown
+      }
+    }
+    
+    // Clean up trade manager
+    if (manager) {
+      try {
+        manager.shutdown();
+      } catch (e) {
+        // Ignore errors during shutdown
+      }
+    }
   }
 });
 
+
+
 app.on('window-all-closed', (event) => {
-  // On macOS and Windows, keep app running in background
-  if (process.platform !== 'linux') {
-    event.preventDefault();
+  // Reset activity tracking
+  global.lastMoverActivity = null;
+  global.activeMoveCount = 0;
+  
+  // Don't quit the app if we're not in the quitting process
+  if (!isQuitting) {
+    // On macOS and Windows, keep app running in background
+    if (process.platform !== 'linux') {
+      event.preventDefault(); // This prevents the app from quitting
+    }
   }
+  // If isQuitting is true (from auto-updater or user), let the app quit normally
 });
 
 app.on('activate', () => {
@@ -5414,19 +5507,6 @@ module.exports = syncInventoryWithServer;
 
 
 
-
-
-app.on('before-quit', () => {
-    // Clean up any stuck flags
-    global.lastMoverActivity = null;
-    global.activeMoveCount = 0;
-});
-
-app.on('window-all-closed', () => {
-    // Reset activity tracking
-    global.lastMoverActivity = null;
-    global.activeMoveCount = 0;
-});
 
 
 
